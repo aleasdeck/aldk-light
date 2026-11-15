@@ -140,17 +140,35 @@
   .mon { position: absolute; padding: 5px; border-radius: 10px; background: #050507; box-shadow: 0 0 0 1px var(--line-2), 0 10px 30px rgba(0,0,0,.5); cursor: pointer; transition: opacity .2s, transform .15s; }
   .mon:hover { transform: translateY(-2px); }
   .mon.skip { opacity: .28; }
-  .mon .grid { display: grid; gap: 2px; width: 100%; height: 100%; border-radius: 6px; overflow: hidden; }
-  .mon .grid i { background: #1b1b22; transition: background .12s linear; }
+  .mon canvas { display: block; width: 100%; height: 100%; border-radius: 6px; background: #0b0b10; image-rendering: pixelated; }
   .mon .tag { position: absolute; left: 0; right: 0; bottom: -22px; text-align: center; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
-  .partsline { display: flex; align-items: center; gap: 12px; margin-top: 34px; }
-  .partsline .hint, .lampline .hint { width: 70px; flex: none; }
+  .votesline { display: flex; align-items: flex-end; gap: 12px; margin-top: 34px; }
+  .votes { flex: 1; display: flex; align-items: flex-end; gap: 4px; height: 44px; }
+  .votes i { display: block; flex: 1; height: 4%; min-height: 3px; border-radius: 4px 4px 2px 2px; opacity: .3; transition: height .12s linear, opacity .15s; }
+  .votes i.near { opacity: .65; }
+  .votes i.win { opacity: 1; box-shadow: 0 0 0 2px #fff; }
+  .partsline { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
+  .votesline .hint, .partsline .hint, .lampline .hint { width: 96px; flex: none; }
   .parts { flex: 1; display: flex; gap: 4px; height: 18px; }
   .parts i { display: block; flex: 1; height: 100%; border-radius: 5px; background: #1b1b22; outline: 2px solid transparent; outline-offset: 2px; transition: background .12s linear, outline-color .15s; }
   .parts i.now { outline-color: #fff; }
   .lampline { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
   .lampline .bar { flex: 1; height: 12px; border-radius: 6px; background: var(--accent); box-shadow: 0 0 26px rgba(var(--lamp), .8); transition: background .12s linear; }
   body.off .lampline .bar { background: #24242c; box-shadow: none; }
+
+  /* ---- подсказки: значок «?» у названия настройки, текст всплывает при наведении ---- */
+  [data-tip] { cursor: help; }
+  button[data-tip] { cursor: pointer; }
+  .bright[data-tip] { cursor: default; }
+  .tipmark { display: inline-grid; place-items: center; width: 15px; height: 15px; margin-left: 7px; border-radius: 50%; background: rgba(255,255,255,.1); color: var(--muted); font-size: 10.5px; font-weight: 650; font-style: normal; vertical-align: 1px; }
+  [data-tip]:hover .tipmark { background: rgba(255,255,255,.22); color: var(--text); }
+  #tip { position: fixed; z-index: 20; width: max-content; max-width: 300px; padding: 10px 13px; border-radius: 11px; background: #25252f; border: 1px solid var(--line-2); box-shadow: 0 10px 28px rgba(0,0,0,.55); font-size: 12.5px; line-height: 1.5; pointer-events: none; opacity: 0; transition: opacity .12s; white-space: pre-line; }
+  #tip.show { opacity: 1; }
+  details.how { margin-top: 16px; color: var(--muted); font-size: 12.5px; }
+  details.how summary { cursor: pointer; color: #c9c9d4; }
+  details.how summary:hover { color: var(--text); }
+  details.how ol { margin: 10px 0 0; padding-left: 20px; }
+  details.how li { margin-bottom: 6px; }
 
   /* ---- калибровка цветов ---- */
   .btn { padding: 8px 14px; border-radius: 10px; background: rgba(255,255,255,.08); color: var(--text); transition: background .15s; }
@@ -212,7 +230,7 @@
   <main>
     <header class="top">
       <div class="grow"><h1 id="title"></h1><p id="subtitle"></p></div>
-      <label class="bright" title="Яркость">
+      <label class="bright" data-tip="Общая яркость ламп для всех режимов. В режимах «Экран» и «Музыка» это верхняя граница: ярче лампы не станут, а темнее — в зависимости от картинки или звука." data-tip-plain>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2.5M12 19v2.5M2.5 12H5M19 12h2.5M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M5.3 18.7l1.8-1.8M16.9 7.1l1.8-1.8"/></svg>
         <input type="range" id="brightness" min="1" max="100"><output id="brightnessOut"></output>
       </label>
@@ -244,26 +262,43 @@
           <div class="card">
             <h2>Что видят лампы</h2>
             <div class="desk" id="desk"></div>
-            <div class="partsline"><span class="hint">Три части</span><div class="parts" id="parts"><i></i><i></i><i></i></div></div>
-            <div class="lampline"><span class="hint">На лампах</span><div class="bar"></div></div>
-            <p class="hint" style="margin:16px 0 0">Каждый монитор делится на участки, лампы берут преобладающий оттенок. Контроллер красит ленту только целиком, поэтому цвета трёх частей можно показывать лишь по очереди. Щёлкните по монитору, чтобы исключить его.</p>
+            <div class="votesline"><span class="hint" data-tip="Голоса точек экрана по 12 оттенкам цветового круга: чем выше столбик, тем больше на картинке яркого насыщенного цвета этого оттенка.&#10;&#10;Обведён победитель — он и задаёт цвет ламп, вместе с двумя соседними оттенками. В режиме «По очереди» показаны голоса той части экрана, которая сейчас на лампах.">Оттенки</span><div class="votes" id="votes"></div></div>
+            <div class="partsline"><span class="hint" data-tip="Цвета левой, средней и правой третей картинки — каждый посчитан так же, как общий. В режиме «По очереди» лампы переходят между ними; рамкой обведена часть, которая сейчас на лампах.">Три части</span><div class="parts" id="parts"><i></i><i></i><i></i></div></div>
+            <div class="lampline"><span class="hint" data-tip="Цвет, который сейчас отправлен на лампы, — уже после сглаживания, калибровки и усиления насыщенности. Яркость полоски условная: настоящую задают общий ползунок яркости и приглушение тёмных сцен.">На лампах</span><div class="bar"></div></div>
+            <p class="hint" style="margin:16px 0 0">На схеме — картинка такой, какой её видит приложение. Яркие точки дали цвет лампам, приглушённые на него не повлияли. Щёлкните по монитору, чтобы не учитывать его.</p>
+            <details class="how">
+              <summary>Как считается цвет ламп</summary>
+              <ol>
+                <li>Экран снимается около 16 раз в секунду, картинка уменьшается примерно до 100×56 точек.</li>
+                <li>Каждая точка голосует за свой оттенок. Чем она ярче и насыщеннее, тем весомее голос; серые и чёрные точки не голосуют.</li>
+                <li>Цветовой круг разбит на 12 секторов, побеждает тот, за который отдано больше всего. Чтобы лампы не метались между двумя равными цветами, новый оттенок должен обойти текущий на 20%.</li>
+                <li>Цвет ламп — среднее по точкам победившего оттенка, а не по всему экрану: красное и синее в среднем дали бы фиолетовый, которого на картинке нет.</li>
+                <li>Если цвета на экране почти нет (серый рабочий стол, тёмная тема с парой цветных значков), лампы светят белым.</li>
+                <li>Оттенок поправляется калибровкой цветов, насыщенность умножается на ползунок «Насыщенность».</li>
+                <li>Яркость ламп берётся из средней яркости картинки и проходит через «Приглушать тёмные сцены» и «Минимальную яркость».</li>
+                <li>К новому цвету и яркости лампы приходят плавно, за время из «Плавности перехода».</li>
+              </ol>
+            </details>
           </div>
           <div class="card">
             <h2>Настройка</h2>
-            <div class="seg" id="cycleMode" style="display:flex; margin-bottom:6px"><button data-v="0" style="flex:1">Преобладающий</button><button data-v="1" style="flex:1">По очереди</button></div>
+            <div class="seg" id="cycleMode" style="display:flex; margin-bottom:6px">
+              <button data-v="0" style="flex:1" data-tip="Лампы светят одним цветом — тем оттенком, которого на экране больше всего.">Преобладающий</button>
+              <button data-v="1" style="flex:1" data-tip="Экран делится на три части слева направо, и лампы плавно переходят между их цветами по кругу. Замена «трёхцветной» лампе: контроллер умеет красить ленту только целиком.">По очереди</button>
+            </div>
             <div id="cycleBody">
-              <div class="field" style="grid-template-columns:1fr 60px"><span>Смена части каждые</span><output data-out="cycle_period"></output></div>
+              <div class="field" style="grid-template-columns:1fr 60px"><span data-tip="Сколько секунд лампы показывают цвет одной части экрана, прежде чем перейти к следующей.">Смена части каждые</span><output data-out="cycle_period"></output></div>
               <input type="range" data-key="cycle_period" min="5" max="50">
             </div>
-            <div class="field" style="grid-template-columns:1fr 60px"><span>Плавность перехода</span><output data-out="smoothing"></output></div>
+            <div class="field" style="grid-template-columns:1fr 60px"><span data-tip="За какое время лампы доходят до нового цвета и яркости.&#10;&#10;Меньше — быстрее отзываются на смену сцены, но вспыхивают на каждой склейке и взрыве.&#10;Больше — свет меняется мягко, но отстаёт от картинки.&#10;&#10;Для кино и игр обычно удобно 0,5–1,5 с.">Плавность перехода</span><output data-out="smoothing"></output></div>
             <input type="range" data-key="smoothing" min="0" max="95">
-            <div class="field" style="grid-template-columns:1fr 44px"><span>Насыщенность</span><output data-out="saturation"></output></div>
+            <div class="field" style="grid-template-columns:1fr 44px"><span data-tip="Насколько цвет ламп сочнее, чем на экране.&#10;&#10;100% — как на картинке: бледная сцена даёт бледный, почти белый свет.&#10;200% — вдвое насыщеннее: даже слабый оттенок становится явным цветом.&#10;&#10;На чистые яркие цвета не влияет — они и так на максимуме. Убавьте, если лампы кажутся ядовитыми на спокойных сценах.">Насыщенность</span><output data-out="saturation"></output></div>
             <input type="range" data-key="saturation" min="50" max="250">
-            <div class="field" style="grid-template-columns:1fr 52px"><span>Минимальная яркость</span><output data-out="min_brightness"></output></div>
+            <div class="field" style="grid-template-columns:1fr 52px"><span data-tip="Ниже этой яркости лампы не опускаются даже на чёрном экране.&#10;&#10;0% — на чёрном гаснут совсем.&#10;Число справа — доля от общей яркости (ползунок с солнцем наверху).&#10;&#10;Прибавьте, если в тёмных сценах хочется лёгкой подсветки, а не темноты.">Минимальная яркость</span><output data-out="min_brightness"></output></div>
             <input type="range" data-key="min_brightness" min="0" max="40">
-            <div class="field" style="grid-template-columns:1fr 44px"><span>Приглушать тёмные сцены</span><output data-out="dark_dimming"></output></div>
+            <div class="field" style="grid-template-columns:1fr 44px"><span data-tip="Как сильно лампы темнеют вместе с картинкой.&#10;&#10;0% — яркость ламп пропорциональна яркости экрана; на тёмной сцене они всё ещё заметно светят.&#10;100% — лампы темнеют наравне с картинкой.&#10;&#10;Светлые сцены остаются на полной яркости при любом значении.">Приглушать тёмные сцены</span><output data-out="dark_dimming"></output></div>
             <input type="range" data-key="dark_dimming" min="0" max="100">
-            <p class="hint" style="margin:18px 0 0">Чем сильнее приглушение, тем темнее лампы на тёмной картинке; на 100% они темнеют наравне с экраном. Светлые сцены не затрагиваются. Если цвета ламп не совпадают с экраном — пройдите калибровку цветов в настройках.</p>
+            <p class="hint" style="margin:18px 0 0">Наведите на название настройки — появится пояснение. Если цвета ламп не совпадают с экраном, пройдите калибровку цветов в настройках.</p>
           </div>
         </div>
       </section>
@@ -272,7 +307,7 @@
         <div class="card">
           <div class="meter" id="meter"></div>
           <p class="error" id="musicError"></p>
-          <div class="field"><span>Чувствительность</span><input type="range" data-key="sensitivity" min="30" max="300"><output data-out="sensitivity"></output></div>
+          <div class="field"><span data-tip="Насколько сильно лампы отзываются на звук. Громкость подстраивается сама, поэтому менять стоит, только если лампы почти всё время горят в полную силу (убавьте) или едва мигают (прибавьте).">Чувствительность</span><input type="range" data-key="sensitivity" min="30" max="300"><output data-out="sensitivity"></output></div>
           <div class="row" style="border:0"><div class="txt"><b>Цвет</b><span>Радуга меняет оттенок на ударах, второй вариант держит цвет из вкладки «Цвет»</span></div>
             <div class="seg" id="musicColor"><button data-v="1">Радуга</button><button data-v="0">Свой цвет</button></div></div>
           <p class="hint" style="margin:10px 0 0">Яркость следует за басами того, что играет на компьютере. Микрофон не нужен.</p>
@@ -297,7 +332,7 @@
                   <label>Широта<input type="number" id="lat" step="0.01" min="-90" max="90"></label>
                   <label>Долгота<input type="number" id="lon" step="0.01" min="-180" max="180"></label>
                 </div>
-                <div class="field" style="grid-template-columns:1fr 60px; padding-top:0"><span>Запас на сумерки</span><output data-out="schedule_margin"></output></div>
+                <div class="field" style="grid-template-columns:1fr 60px; padding-top:0"><span data-tip="На сколько минут раньше заката включать лампы и на сколько позже рассвета выключать: в сумерках в комнате уже темно, хотя солнце ещё не село.">Запас на сумерки</span><output data-out="schedule_margin"></output></div>
                 <input type="range" data-key="schedule_margin" min="0" max="90">
                 <p class="hint" id="sunInfo" style="margin:14px 0 0"></p>
               </div>
@@ -326,6 +361,8 @@
     </div>
   </main>
 </div>
+
+<div id="tip" role="tooltip"></div>
 
 <div class="calib" id="calib" hidden>
   <div class="calib-panel">
@@ -492,7 +529,7 @@ function layoutDesk() {
     el.className = "mon" + (used.includes(m.key) ? "" : " skip");
     el.dataset.mon = m.key;
     el.style.cssText = `left:${offset + (m.left - left) * scale + i * gap}px; top:${(m.top - top) * scale}px; width:${m.width * scale}px; height:${m.height * scale}px`;
-    el.innerHTML = `<div class="grid" style="grid-template-columns:repeat(${m.cols},1fr); grid-template-rows:repeat(${m.rows},1fr)">${"<i></i>".repeat(m.cols * m.rows)}</div><div class="tag"></div>`;
+    el.innerHTML = `<canvas width="1" height="1"></canvas><div class="tag"></div>`;
     $(".tag", el).textContent = `${m.width}×${m.height}${m.primary ? " · основной" : ""}`;
     el.onclick = () => toggleMonitor(m.key);
     desk.append(el);
@@ -507,11 +544,33 @@ function toggleMonitor(key) {
   api.set("screen_displays", S.screen_displays);
   layoutDesk();
 }
-function paintZones(zones) {
-  for (const z of zones) {
-    const cells = $$(`.mon[data-mon="${z.key}"] .grid i`);
-    z.colors.forEach((c, i) => { if (cells[i]) cells[i].style.background = `rgb(${c[0]},${c[1]},${c[2]})`; });
+// Картинка монитора приходит точками RGBA в base64 (screen.points_view): прозрачность — насколько
+// точка повлияла на цвет ламп, поэтому на тёмном фоне «не голосовавшие» точки выглядят приглушёнными.
+function paintViews(views) {
+  const fresh = new Set(views.map(v => v.key));
+  for (const canvas of $$(".mon canvas")) {
+    if (!fresh.has(canvas.parentElement.dataset.mon) && canvas.width > 1) { canvas.width = canvas.height = 1; }   // подсветка по экрану выключена
   }
+  for (const v of views) {
+    const canvas = $(`.mon[data-mon="${v.key}"] canvas`);
+    if (!canvas) continue;
+    if (canvas.width !== v.width || canvas.height !== v.height) { canvas.width = v.width; canvas.height = v.height; }
+    const bytes = Uint8ClampedArray.from(atob(v.pixels), ch => ch.charCodeAt(0));
+    if (bytes.length === v.width * v.height * 4) canvas.getContext("2d").putImageData(new ImageData(bytes, v.width, v.height), 0, 0);
+  }
+}
+function initVotes() {
+  // Столбик на каждый из 12 секторов цветового круга, цвет — середина сектора.
+  $("#votes").innerHTML = Array.from({ length: 12 }, (_, i) => `<i style="background:hsl(${i * 30 + 15} 85% 55%)"></i>`).join("");
+}
+function paintVotes(votes, winner) {
+  const top = Math.max(...votes, 1e-9);
+  $$("#votes i").forEach((bar, i) => {
+    const away = winner === null || winner === undefined ? 99 : Math.min(Math.abs(i - winner), 12 - Math.abs(i - winner));
+    bar.style.height = (votes.length ? 4 + 96 * (votes[i] || 0) / top : 4) + "%";
+    bar.classList.toggle("win", votes.length > 0 && away === 0);
+    bar.classList.toggle("near", votes.length > 0 && away === 1);
+  });
 }
 function paintParts(parts, active) {
   $$("#parts i").forEach((el, i) => {
@@ -527,6 +586,30 @@ function initCycle() {
   };
   $$("#cycleMode button").forEach(b => b.onclick = () => { setKey("screen_cycle", b.dataset.v === "1"); mark(); });
   mark();
+}
+
+/* ---- подсказки ---- */
+// Текст берётся из data-tip. У названий настроек рисуется значок «?», чтобы было видно, что подсказка есть;
+// у кнопок и ползунков (data-tip-plain и button) значка нет.
+function initTips() {
+  const tip = $("#tip");
+  const hide = () => tip.classList.remove("show");
+  const show = el => {
+    tip.textContent = el.dataset.tip;
+    tip.classList.add("show");
+    const box = el.getBoundingClientRect(), gap = 8, edge = 10;
+    const left = Math.min(Math.max(edge, box.left), innerWidth - tip.offsetWidth - edge);
+    const below = box.bottom + gap + tip.offsetHeight <= innerHeight - edge;
+    tip.style.left = left + "px";
+    tip.style.top = (below ? box.bottom + gap : Math.max(edge, box.top - gap - tip.offsetHeight)) + "px";
+  };
+  for (const el of $$("[data-tip]")) {
+    if (el.tagName !== "BUTTON" && !("tipPlain" in el.dataset)) el.insertAdjacentHTML("beforeend", `<i class="tipmark">?</i>`);
+    el.addEventListener("pointerenter", () => show(el));
+    el.addEventListener("pointerleave", hide);
+    el.addEventListener("pointerdown", hide);
+  }
+  window.addEventListener("blur", hide);
 }
 
 /* ---- калибровка цветов ---- */
@@ -755,7 +838,7 @@ function render(L) {
       $("#calibHint").classList.toggle("warn", offline);
     }
   }
-  if (page === "screen") { paintZones(L.zones || []); paintParts(L.parts || [], L.part); }
+  if (page === "screen") { paintViews(L.views || []); paintVotes(L.votes || [], L.winner); paintParts(L.parts || [], L.part); }
   if (page === "music") { paintMeter(S.mode === 3 && S.power ? L.level : 0); $("#musicError").textContent = L.music_error || ""; }
 }
 async function poll() {
@@ -770,7 +853,7 @@ async function poll() {
 async function boot() {
   DATA = await api.init();
   S = DATA.settings;
-  initControls(); initColor(); initEffects(); initMusic(); initCycle(); initSun(); initCalibration();
+  initControls(); initColor(); initEffects(); initMusic(); initCycle(); initSun(); initCalibration(); initVotes(); initTips();
   showPower();
   setLamp(hsv2rgb(S.hue, S.sat / 1000, 1));
   go(MODE_PAGES[S.mode] || "color");
@@ -785,8 +868,18 @@ function mockApi() {
     smoothing: 60, saturation: 130, min_brightness: 5, dark_dimming: 40, screen_calibration: [], sensitivity: 100, music_rainbow: true, off_on_exit: false,
     schedule_enabled: true, schedule_on: "09:00", schedule_off: "23:30", schedule_days: [0, 1, 2, 3, 4], device_name: "JTX-HC",
     schedule_sun: true, schedule_margin: 20, schedule_city: "Владивосток", schedule_lat: 43.12, schedule_lon: 131.89 };
-  const monitors = [{ key: "0,0,2560,1440", left: 0, top: 0, width: 2560, height: 1440, primary: true, cols: 4, rows: 3 },
-                    { key: "2560,-560,1440,2560", left: 2560, top: -560, width: 1440, height: 2560, primary: false, cols: 3, rows: 4 }];
+  const monitors = [{ key: "0,0,2560,1440", left: 0, top: 0, width: 2560, height: 1440, primary: true },
+                    { key: "2560,-560,1440,2560", left: 2560, top: -560, width: 1440, height: 2560, primary: false }];
+  // Выдуманная картинка: синяя сцена с тёплым пятном, которое ездит по экрану. Победитель — синий.
+  const mockView = (m, k, time) => {
+    const w = m.width > m.height ? 50 : 48, h = m.width > m.height ? 28 : 86, bytes = new Uint8Array(w * h * 4);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const warm = Math.hypot(x / w - 0.5 - 0.3 * Math.sin(time + k), y / h - 0.5) < 0.18;
+      const rgb = warm ? hsv2rgb(28, 0.9, 0.95) : hsv2rgb(215 + 25 * Math.sin(x / 9 + time), 0.3 + 0.6 * y / h, 0.25 + 0.6 * x / w);
+      bytes.set([...rgb, warm ? 70 : 70 + Math.round(185 * (0.3 + 0.7 * y / h) * (0.4 + 0.6 * x / w))], (y * w + x) * 4);
+    }
+    return { key: m.key, width: w, height: h, pixels: btoa(String.fromCharCode(...bytes)) };
+  };
   const names = ["Автоцикл", "Симфония", "Цветная энергия", "Раскрытие, красный", "Раскрытие, зелёный", "Раскрытие, синий", "Бегущая вода, 7 цветов", "Бегущая вода, красный-зелёный", "Шлейф, красный", "Шлейф, белый"];
   let t = 0, calibrating = false, calibHue = 0;
   const patchNames = ["красный", "оранжевый", "жёлтый", "салатовый", "зелёный", "зелёно-бирюзовый", "голубой", "лазурный", "синий", "фиолетовый", "пурпурный", "розовый"];
@@ -803,7 +896,8 @@ function mockApi() {
       const zone = (k, i) => hsv2rgb((200 + 60 * Math.sin(t + i * 0.6 + k)) % 360, 0.75, 0.35 + 0.3 * Math.sin(t * 1.3 + i));
       const lamp = calibrating ? hsv2rgb(calibHue, 1, 1) : s.mode === 0 ? hsv2rgb(s.hue, s.sat / 1000, 1) : hsv2rgb((220 + 40 * Math.sin(t)) % 360, 0.8, 1);
       return { status: "connected", detail: "AA:BB:CC:DD:EE:FF", power: s.power, mode: s.mode, calibrating, brightness: s.brightness, lamp,
-        zones: s.mode === 2 ? monitors.map((m, k) => ({ key: m.key, colors: Array.from({ length: m.cols * m.rows }, (_, i) => zone(k, i)) })) : [],
+        views: s.mode === 2 ? monitors.map((m, k) => mockView(m, k, t)) : [],
+        votes: s.mode === 2 ? [0.11 + 0.03 * Math.sin(t), 0.02, 0.01, 0, 0.01, 0.02, 0.19, 0.42, 0.17, 0.03, 0.01, 0.01] : [], winner: s.mode === 2 ? 7 : null,
         parts: s.mode === 2 ? [zone(0, 1), zone(0, 5), zone(1, 3)] : [], part: s.mode === 2 && s.screen_cycle ? Math.floor(t / 2) % 3 : null,
         level: Math.abs(Math.sin(t * 3)) ** 3, music_error: "" };
     },

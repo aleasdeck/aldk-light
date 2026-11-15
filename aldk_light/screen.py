@@ -1,19 +1,20 @@
 """Цвет экрана для режима подсветки под картинку.
 
-Каждый монитор делится на сетку участков. Для участка считаются «яркий» цвет
-(насыщенные точки весят больше) и вес — насколько участок вообще цветной.
-Итоговый цвет ламп — преобладающий оттенок по всем участкам, а не среднее:
-среднее от красного слева и синего справа даёт грязно-фиолетовый, которого на
-экране нет.
+Кадр уменьшается, и каждая его точка голосует за свой оттенок: чем она ярче и
+насыщеннее, тем весомее голос. Итоговый цвет ламп — преобладающий оттенок, а не
+среднее по экрану: среднее от красного и синего даёт грязно-фиолетовый, которого
+на картинке нет. Те же точки и голоса отдаются интерфейсу: на схеме видно, что
+снимается и какой оттенок победил.
 """
 
 from __future__ import annotations
 
+import base64
 import colorsys
 import logging
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 import mss
@@ -21,21 +22,21 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-# Сколько точек по ширине брать с кадра: для цвета участков больше не нужно.
+# Сколько точек по ширине брать с кадра: для выбора цвета больше не нужно.
 _SAMPLE_WIDTH = 96
 # Как часто перечитывать список мониторов, секунды.
 _RESCAN_SECONDS = 5.0
 # На сколько секторов делится цветовой круг при поиске преобладающего оттенка.
 _HUE_BINS = 12
-# Вес «серой массы» участка: белый документ с одной цветной иконкой остаётся белым.
-# Умножается на яркость участка, поэтому тёмная сцена со слабым оттенком (ночное небо)
+# Вес «серой массы» картинки: белый документ с одной цветной иконкой остаётся белым.
+# Умножается на яркость точки, поэтому тёмная сцена со слабым оттенком (ночное небо)
 # сохраняет свой цвет, а не превращается в белый.
 _GREY_WEIGHT = 0.025
 # Лента светит линейно, а цвета на экране закодированы с гаммой. Без пересчёта экранный
 # зелёный с небольшой долей синего (0, 230, 128) уходит на ленту как «синий вполсилы»
 # и выглядит бирюзовым, хотя на мониторе синего там всего ~20% по свету.
 _LED_GAMMA = 2.4
-# Средняя «цветная энергия» участка, ниже и выше которой цвету сцены не верим / верим.
+# Средняя «цветная энергия» картинки, ниже и выше которой цвету сцены не верим / верим.
 # Замер на экране пользователя: тёмный серый рабочий стол — 0.002…0.005, обычная цветная картинка — 0.036…0.045.
 _COLOUR_WEAK = 0.005
 _COLOUR_CLEAR = 0.02
@@ -137,11 +138,6 @@ def scene_brightness(light: float, floor: int, dimming: int) -> float:
 _SWITCH_MARGIN = 1.2
 
 
-def grid_for(width: int, height: int) -> tuple[int, int]:
-    """Сетка участков (столбцы, строки) под ориентацию монитора."""
-    return (4, 3) if width >= height else (3, 4)
-
-
 def _open_capture():
     return (getattr(mss, "MSS", None) or mss.mss)()  # в новых версиях mss класс называется MSS
 
@@ -162,11 +158,10 @@ def choose_monitors(monitors: list[dict], keys: list[str]) -> list[dict]:
 
 
 def describe_monitors() -> list[dict]:
-    """Мониторы с положением на рабочем столе и сеткой участков — для интерфейса."""
+    """Мониторы с положением на рабочем столе — для интерфейса."""
     with _open_capture() as sct:
         result = []
         for mon in sct.monitors[1:]:  # нулевой элемент — весь рабочий стол целиком
-            cols, rows = grid_for(mon["width"], mon["height"])
             result.append(
                 {
                     "key": monitor_key(mon),
@@ -176,73 +171,71 @@ def describe_monitors() -> list[dict]:
                     "height": mon["height"],
                     # Основной монитор в Windows всегда начинается в точке (0, 0).
                     "primary": mon["left"] == 0 and mon["top"] == 0,
-                    "cols": cols,
-                    "rows": rows,
                 }
             )
         return result
 
 
 @dataclass
-class ZoneStats:
-    mean: np.ndarray    # N×3, обычный средний цвет участка
-    vivid: np.ndarray   # N×3, цвет участка с перевесом ярких насыщенных точек
-    weight: np.ndarray  # N, насколько участок цветной (0 — серый или чёрный)
-    light: np.ndarray   # N, общая яркость участка
+class PixelStats:
+    """Точки кадра (после уменьшения), по которым выбирается цвет ламп."""
+
+    rgb: np.ndarray     # N×3, цвет точки, 0..1
+    weight: np.ndarray  # N, сколько «цветного света» даёт точка: цветность × яркость × площадь
+    light: np.ndarray   # N, яркость точки (самый сильный канал)
+    area: np.ndarray    # N, сколько настоящих пикселей экрана стоит за точкой
+    bins: np.ndarray    # N, сектор цветового круга, в который попал оттенок точки
 
 
-def zone_stats(rgb: np.ndarray, cols: int, rows: int) -> ZoneStats:
-    """Разбить кадр H×W×3 (значения 0..1) на cols×rows участков, слева направо, сверху вниз."""
-    height, width, _ = rgb.shape
-    brightest = rgb.max(axis=2)
-    colourful = (brightest - rgb.min(axis=2)) * brightest
-    ys = np.linspace(0, height, rows + 1).astype(int)
-    xs = np.linspace(0, width, cols + 1).astype(int)
-    count = cols * rows
-    mean = np.zeros((count, 3), np.float32)
-    vivid = np.zeros((count, 3), np.float32)
-    weight = np.zeros(count, np.float32)
-    light = np.zeros(count, np.float32)
-    for row in range(rows):
-        for col in range(cols):
-            index = row * cols + col
-            area = (slice(ys[row], ys[row + 1]), slice(xs[col], xs[col + 1]))
-            block, block_weight = rgb[area], colourful[area]
-            mean[index] = block.mean(axis=(0, 1))
-            total = float(block_weight.sum())
-            if total > 1e-6:
-                vivid[index] = (block * block_weight[..., None]).sum(axis=(0, 1)) / total
-            else:
-                vivid[index] = mean[index]
-            weight[index] = block_weight.mean()
-            light[index] = brightest[area].mean()
-    return ZoneStats(mean, vivid, weight, light)
+def pixel_stats(rgb: np.ndarray, area: float = 1.0) -> PixelStats:
+    """Разобрать кадр H×W×3 (значения 0..1) на точки. area — площадь экрана за одной точкой:
+    мониторы уменьшаются с разным шагом, а голос в выборе цвета должен зависеть от настоящей
+    площади на экране, а не от числа оставшихся точек."""
+    points = rgb.reshape(-1, 3).astype(np.float32)
+    red, green, blue = points[:, 0], points[:, 1], points[:, 2]
+    light = points.max(axis=1)
+    spread = light - points.min(axis=1)
+    safe = np.where(spread > 0, spread, 1.0)
+    sixth = np.where(
+        light == red, ((green - blue) / safe) % 6.0,
+        np.where(light == green, (blue - red) / safe + 2.0, (red - green) / safe + 4.0),
+    )  # оттенок в шестых долях круга; у серых точек он не важен — их вес равен нулю
+    bins = (sixth / 6.0 * _HUE_BINS).astype(int) % _HUE_BINS
+    areas = np.full(len(points), float(area), np.float32)
+    # Вес — цветность × яркость: яркая насыщенная точка говорит о цвете сцены больше, чем тусклая.
+    return PixelStats(points, spread * light * areas, light, areas, bins)
 
 
-def dominant_color(stats: ZoneStats, prefer_bin: int | None = None) -> tuple[np.ndarray, int]:
-    """Преобладающий цвет по участкам и сектор цветового круга, в который он попал."""
-    hues = np.array([colorsys.rgb_to_hsv(*(float(x) for x in color))[0] for color in stats.vivid])
-    bins = (hues * _HUE_BINS).astype(int) % _HUE_BINS
-    score = np.bincount(bins, weights=stats.weight, minlength=_HUE_BINS)
+def dominant_color(stats: PixelStats, prefer_bin: int | None = None) -> tuple[np.ndarray, int]:
+    """Преобладающий цвет картинки и сектор цветового круга, в который он попал.
+
+    Каждая точка голосует за свой оттенок. Раньше голосовали участки экрана, и участок, в котором
+    было два цвета, отдавал голос за их смесь: синяя сцена с красными объектами по всему экрану
+    давала на лампах фиолетовый, которого на картинке нет.
+    """
+    score = np.bincount(stats.bins, weights=stats.weight, minlength=_HUE_BINS)
     # Соседние сектора — почти тот же цвет, считаем их вместе.
     spread = score + 0.5 * (np.roll(score, 1) + np.roll(score, -1))
     best = int(spread.argmax())
     if prefer_bin is not None and spread[prefer_bin] * _SWITCH_MARGIN >= spread[best]:
         best = prefer_bin
-    distance = np.abs(bins - best)
+    distance = np.abs(stats.bins - best)
     distance = np.minimum(distance, _HUE_BINS - distance)
     member_weight = np.where(distance <= 1, stats.weight, 0.0)
-    grey_weight = _GREY_WEIGHT * stats.light
+    grey_weight = _GREY_WEIGHT * stats.light * stats.area
     total = float(member_weight.sum() + grey_weight.sum())
     if total < 1e-9:  # полностью чёрный кадр
-        return stats.mean.mean(axis=0).astype(np.float32), best
-    color = (
-        (stats.vivid * member_weight[:, None]).sum(axis=0) + (stats.mean * grey_weight[:, None]).sum(axis=0)
-    ) / total
+        return np.zeros(3, np.float32), best
+    color = (stats.rgb * (member_weight + grey_weight)[:, None]).sum(axis=0) / total
     return color.astype(np.float32), best
 
 
-def colour_confidence(stats: ZoneStats) -> float:
+def scene_light(stats: PixelStats) -> float:
+    """Средняя яркость картинки, 0..1."""
+    return float((stats.light * stats.area).sum() / max(float(stats.area.sum()), 1e-9))
+
+
+def colour_confidence(stats: PixelStats) -> float:
     """Насколько цвету сцены можно верить, 0..1. На это число умножается насыщенность ламп.
 
     На тёмном сером экране цветных точек доли процента (подсветка текста, значки),
@@ -250,21 +243,68 @@ def colour_confidence(stats: ZoneStats) -> float:
     Верим в двух случаях: цветного света на экране много, или вся картинка окрашена
     в один тон (ночное небо: темно, но честно синее).
     """
-    plain = (stats.mean * stats.light[:, None]).sum(axis=0) / max(float(stats.light.sum()), 1e-9)
+    # Обычный средний цвет картинки, без перевеса ярких точек: иначе горстка яркого жёлтого
+    # текста на тёмно-сером фоне сама выглядела бы как «вся картинка жёлтая».
+    plain = (stats.rgb * stats.area[:, None]).sum(axis=0) / max(float(stats.area.sum()), 1e-9)
     peak = float(plain.max())
     plain_saturation = (peak - float(plain.min())) / peak if peak > 1e-4 else 0.0
+    colourful = float(stats.weight.sum() / max(float(stats.area.sum()), 1e-9))
     return max(
-        _smoothstep(_COLOUR_WEAK, _COLOUR_CLEAR, float(stats.weight.mean())),
+        _smoothstep(_COLOUR_WEAK, _COLOUR_CLEAR, colourful),
         _smoothstep(0.15, 0.40, plain_saturation),
     )
 
 
-def _merge(parts: list[ZoneStats]) -> ZoneStats:
-    return ZoneStats(
-        np.concatenate([p.mean for p in parts]),
-        np.concatenate([p.vivid for p in parts]),
+# ---- то же самое для схемы в интерфейсе: какие точки и чьи голоса дали цвет ламп ----
+
+# Точки схемы берутся через одну: для картинки шириной в пару сотен пикселей больше не нужно.
+_VIEW_STEP = 2
+# Насколько заметна на схеме точка, не повлиявшая на цвет (0..255), и при какой «цветности»
+# повлиявшая точка показывается в полную силу.
+_VIEW_DIM = 70
+_VIEW_FULL = 0.25
+
+
+def vote_shares(stats: PixelStats) -> list[float]:
+    """Доля голосов за каждый сектор цветового круга, в сумме 1 (или одни нули, если цвета нет)."""
+    score = np.bincount(stats.bins, weights=stats.weight, minlength=_HUE_BINS)
+    total = float(score.sum())
+    return [round(float(x) / total, 4) if total > 1e-9 else 0.0 for x in score]
+
+
+def point_alpha(stats: PixelStats, winners) -> np.ndarray:
+    """Заметность каждой точки на схеме, 0..255: чем больше точка дала цвету ламп, тем она ярче.
+
+    winners — победивший сектор: одно число на всю картинку или по числу на каждую точку
+    (в режиме «по очереди» у каждой трети экрана свой победитель).
+    """
+    distance = np.abs(stats.bins - winners)
+    distance = np.minimum(distance, _HUE_BINS - distance)
+    colourful = stats.weight / np.maximum(stats.area, 1e-9)
+    strength = np.sqrt(np.clip(colourful / _VIEW_FULL, 0.0, 1.0)) * (distance <= 1)
+    return (_VIEW_DIM + (255 - _VIEW_DIM) * strength).astype(np.uint8)
+
+
+def points_view(key: str, rgb: np.ndarray, alpha: np.ndarray) -> dict:
+    """Картинка монитора для схемы: точки RGBA подряд по строкам, в base64 — так её дешевле
+    всего передать в интерфейс и сразу положить на холст."""
+    height, width, _ = rgb.shape
+    rgba = np.dstack([np.rint(rgb * 255).astype(np.uint8), alpha.reshape(height, width)])[::_VIEW_STEP, ::_VIEW_STEP]
+    return {
+        "key": key,
+        "width": rgba.shape[1],
+        "height": rgba.shape[0],
+        "pixels": base64.b64encode(np.ascontiguousarray(rgba).tobytes()).decode("ascii"),
+    }
+
+
+def _merge(parts: list[PixelStats]) -> PixelStats:
+    return PixelStats(
+        np.concatenate([p.rgb for p in parts]),
         np.concatenate([p.weight for p in parts]),
         np.concatenate([p.light for p in parts]),
+        np.concatenate([p.area for p in parts]),
+        np.concatenate([p.bins for p in parts]),
     )
 
 
@@ -277,18 +317,21 @@ def split_into_parts(centres: np.ndarray, left: float, right: float) -> np.ndarr
     return np.clip((share * PARTS).astype(int), 0, PARTS - 1)
 
 
-def _subset(stats: ZoneStats, mask: np.ndarray) -> ZoneStats:
-    return ZoneStats(stats.mean[mask], stats.vivid[mask], stats.weight[mask], stats.light[mask])
+def _subset(stats: PixelStats, mask: np.ndarray) -> PixelStats:
+    return PixelStats(stats.rgb[mask], stats.weight[mask], stats.light[mask], stats.area[mask], stats.bins[mask])
 
 
 @dataclass
 class ScreenFrame:
     color: np.ndarray      # цвет для ламп по этому кадру, RGB 0..1 (сглаживает его ColorFader)
     light: float           # общая яркость картинки 0..1
-    monitors: list[dict]   # [{"key": "0,0,2560,1440", "colors": [[r, g, b], …]}] — цвета участков 0..255
+    views: list[dict]      # картинки мониторов для схемы в интерфейсе, см. points_view
     # (цвет, яркость, доверие к цвету) левой, средней и правой частей картинки
     parts: list[tuple[np.ndarray, float, float]]
     confidence: float = 1.0  # доверие к общему цвету, 0..1
+    # Голоса по секторам цветового круга и победивший сектор: сначала вся картинка, потом три части.
+    votes: list[list[float]] = field(default_factory=list)
+    winners: list[int] = field(default_factory=list)
 
 
 class ScreenSampler(threading.Thread):
@@ -299,10 +342,13 @@ class ScreenSampler(threading.Thread):
         display_keys: list[str],
         on_frame: Callable[[ScreenFrame], None],
         fps: int = 20,
+        split_view: Callable[[], bool] = lambda: False,
     ) -> None:
         super().__init__(name="screen-sampler", daemon=True)
         self._display_keys = list(display_keys)
         self._on_frame = on_frame
+        # Для схемы: подсвечивать точки победителя всей картинки или каждой трети своего («по очереди»).
+        self._split_view = split_view
         self._period = 1.0 / fps
         self._stop_event = threading.Event()
         self._hue_bin: int | None = None
@@ -326,54 +372,62 @@ class ScreenSampler(threading.Thread):
     def _session(self) -> None:
         with _open_capture() as sct:
             chosen = choose_monitors(sct.monitors[1:], self._display_keys)
-            regions = [
-                (monitor_key(mon), mon, grid_for(mon["width"], mon["height"]), max(1, mon["width"] // _SAMPLE_WIDTH))
-                for mon in chosen
-            ]
-            captured = [key for key, *_ in regions]
+            regions = [(monitor_key(mon), mon, max(1, mon["width"] // _SAMPLE_WIDTH)) for mon in chosen]
+            captured = [key for key, _mon, _step in regions]
             if captured != self._captured:
                 self._captured = captured
                 log.info("capturing monitors: %s", "; ".join(captured))
 
-            # Заранее раскладываем участки всех мониторов по трём полосам рабочего стола.
-            centres = []
-            for _index, mon, (cols, rows), _step in regions:
-                row = mon["left"] + (np.arange(cols) + 0.5) / cols * mon["width"]
-                centres.append(np.tile(row, rows))
-            part_of_zone = split_into_parts(
-                np.concatenate(centres),
-                min(mon["left"] for _i, mon, _g, _s in regions),
-                max(mon["left"] + mon["width"] for _i, mon, _g, _s in regions),
-            )
+            # Рабочий стол делится на три полосы слева направо — по ним считаются «три части».
+            desk_left = min(mon["left"] for _key, mon, _step in regions)
+            desk_right = max(mon["left"] + mon["width"] for _key, mon, _step in regions)
 
             hue_bin, part_bins = self._hue_bin, self._part_bins
             rescan_at = time.monotonic() + _RESCAN_SECONDS
             while not self._stop_event.is_set() and time.monotonic() < rescan_at:
                 started = time.perf_counter()
-                parts: list[ZoneStats] = []
-                previews: list[dict] = []
-                for index, mon, (cols, rows), step in regions:
+                pieces: list[PixelStats] = []
+                part_of_point: list[np.ndarray] = []
+                pictures: list[tuple[str, np.ndarray]] = []
+                for key, mon, step in regions:
                     shot = sct.grab(mon)
                     frame = np.frombuffer(shot.raw, np.uint8).reshape(shot.height, shot.width, 4)
                     rgb = frame[::step, ::step, 2::-1].astype(np.float32) * (1.0 / 255.0)  # BGRA → RGB
-                    stats = zone_stats(rgb, cols, rows)
-                    parts.append(stats)
-                    previews.append({"key": index, "colors": np.rint(stats.mean * 255).astype(int).tolist()})
+                    pieces.append(pixel_stats(rgb, area=step * step))
+                    # К какой полосе рабочего стола относится каждая точка: по её столбцу.
+                    centres = mon["left"] + (np.arange(rgb.shape[1]) + 0.5) * step
+                    part_of_point.append(np.tile(split_into_parts(centres, desk_left, desk_right), rgb.shape[0]))
+                    pictures.append((key, rgb))
 
-                merged = _merge(parts)
+                merged = _merge(pieces)
+                part_index = np.concatenate(part_of_point)
                 color, hue_bin = dominant_color(merged, hue_bin)
                 self._hue_bin = hue_bin  # текущий оттенок переживает перечитывание мониторов
-                light = float(merged.light.mean())
+                light = scene_light(merged)
                 confidence = colour_confidence(merged)
                 parts = []
+                votes, winners = [vote_shares(merged)], [hue_bin]
                 for part in range(PARTS):
-                    mask = part_of_zone == part
-                    if not mask.any():       # узкий одиночный монитор: полоса пуста — берём общий цвет
+                    mask = part_index == part
+                    if not mask.any():       # на всякий случай: пустая полоса берёт общий цвет
                         parts.append((color, light, confidence))
+                        votes.append(votes[0])
+                        winners.append(hue_bin)
                         continue
                     piece = _subset(merged, mask)
                     part_color, part_bins[part] = dominant_color(piece, part_bins[part])
-                    parts.append((part_color, float(piece.light.mean()), colour_confidence(piece)))
-                self._on_frame(ScreenFrame(color, light, previews, parts, confidence))
+                    parts.append((part_color, scene_light(piece), colour_confidence(piece)))
+                    votes.append(vote_shares(piece))
+                    winners.append(part_bins[part])
+
+                # Схема для интерфейса: те же точки, ярче — те, что дали цвет лампам.
+                wanted = np.array(winners[1:])[part_index] if self._split_view() else hue_bin
+                alpha = point_alpha(merged, wanted)
+                views, offset = [], 0
+                for key, rgb in pictures:
+                    count = rgb.shape[0] * rgb.shape[1]
+                    views.append(points_view(key, rgb, alpha[offset:offset + count]))
+                    offset += count
+                self._on_frame(ScreenFrame(color, light, views, parts, confidence, votes, winners))
 
                 self._stop_event.wait(max(0.0, self._period - (time.perf_counter() - started)))

@@ -91,7 +91,9 @@ class Engine:
         self._lock = threading.RLock()        # режимы и настройки
         self._live_lock = threading.Lock()    # то, что показывает интерфейс
         self._status = ("searching", "")
-        self._zones: list[dict] = []
+        self._views: list[dict] = []          # картинки мониторов для схемы в интерфейсе
+        self._votes: list[float] = []         # голоса по оттенкам за цвет, который сейчас на лампах
+        self._winner: int | None = None       # победивший сектор цветового круга
         self._parts: list[list[int]] = []     # цвета трёх частей экрана для интерфейса
         self._part: int | None = None         # какая часть сейчас на лампах в режиме «по очереди»
         self._lamp: tuple[int, int, int] | None = None
@@ -273,7 +275,7 @@ class Engine:
         }
 
     def live(self) -> dict:
-        """То, что меняется само: связь, цвет на лампах, участки экрана, уровень звука."""
+        """То, что меняется само: связь, цвет на лампах, картинка экрана, уровень звука."""
         with self._live_lock:
             state, detail = self._status
             return {
@@ -284,7 +286,9 @@ class Engine:
                 "calibrating": self._calibrating,
                 "brightness": self.s.brightness,
                 "lamp": list(self._lamp) if self._lamp else None,
-                "zones": self._zones,
+                "views": self._views,
+                "votes": self._votes,
+                "winner": self._winner,
                 "parts": self._parts,
                 "part": self._part,
                 "level": round(self._level, 3),
@@ -328,7 +332,9 @@ class Engine:
             self._audio.stop()
             self._audio = None
         with self._live_lock:
-            self._zones = []
+            self._views = []
+            self._votes = []
+            self._winner = None
             self._parts = []
             self._part = None
             self._level = 0.0
@@ -356,7 +362,9 @@ class Engine:
         elif mode == MODE_SCREEN:
             self._fader = ColorFader(lambda: self.s.smoothing, self._on_screen_color)
             self._fader.start()
-            self._screen = ScreenSampler(self.s.screen_displays, self._on_screen_frame)
+            self._screen = ScreenSampler(
+                self.s.screen_displays, self._on_screen_frame, split_view=lambda: self.s.screen_cycle
+            )
             self._screen.start()
         elif mode == MODE_MUSIC:
             self._start_music()
@@ -395,8 +403,12 @@ class Engine:
             # гораздо меньшие ступени, и там шаги должны быть мельче.
             fader.set_target(np.array(colorsys.hsv_to_rgb(hue, sat, 1.0), np.float32), math.sqrt(value))
         with self._live_lock:
-            self._zones = frame.monitors
-            self._parts = [np.rint(np.clip(part[0], 0, 1) * 255).astype(int).tolist() for part in frame.parts]
+            self._views = frame.views
+            # Голоса показываем за то, что сейчас на лампах: вся картинка или текущая часть.
+            shown = 0 if active is None else active + 1
+            if shown < len(frame.votes):
+                self._votes, self._winner = frame.votes[shown], frame.winners[shown]
+            self._parts =[np.rint(np.clip(part[0], 0, 1) * 255).astype(int).tolist() for part in frame.parts]
             self._part = active
 
     # Вызывается из потока плавного перехода, чаще, чем приходят кадры.

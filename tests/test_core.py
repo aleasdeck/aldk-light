@@ -6,7 +6,7 @@ import numpy as np
 from aldk_light import protocol
 from aldk_light.ble import address_number
 from aldk_light.schedule import desired_power, parse_hhmm
-from aldk_light.screen import ZoneStats, colour_confidence, dominant_color, grid_for, zone_stats
+from aldk_light.screen import colour_confidence, dominant_color, pixel_stats, scene_light
 
 
 class ProtocolTest(unittest.TestCase):
@@ -54,48 +54,119 @@ def solid(color, height=30, width=40):
     return np.full((height, width, 3), color, np.float32)
 
 
-class ZoneTest(unittest.TestCase):
-    def test_grid_follows_orientation(self):
-        self.assertEqual(grid_for(2560, 1440), (4, 3))
-        self.assertEqual(grid_for(1440, 2560), (3, 4))
+class ScreenColourTest(unittest.TestCase):
+    def test_votes_show_how_the_colour_was_chosen(self):
+        from aldk_light.screen import vote_shares
 
-    def test_zones_go_left_to_right_top_to_bottom(self):
-        frame = solid((0.0, 0.0, 0.0))
-        frame[:15, 20:, :] = (1.0, 0.0, 0.0)   # правый верхний угол красный
-        stats = zone_stats(frame, 2, 2)
-        self.assertTrue(np.allclose(stats.mean[1], (1, 0, 0)))
-        for other in (0, 2, 3):
-            self.assertTrue(np.allclose(stats.mean[other], 0))
-        self.assertGreater(stats.weight[1], 0.9)
-        self.assertEqual(float(stats.weight[0]), 0.0)
+        # Две трети картинки красные, треть синяя — столько же и голосов.
+        frame = solid((0.0, 0.0, 1.0), height=10, width=30)
+        frame[:, :20] = (1.0, 0.0, 0.0)
+        stats = pixel_stats(frame)
+        votes = vote_shares(stats)
+        _, winner = dominant_color(stats)
+        self.assertEqual(len(votes), 12)
+        self.assertAlmostEqual(sum(votes), 1.0, places=3)
+        self.assertEqual(winner, 0)                      # красный — первый сектор круга
+        self.assertAlmostEqual(votes[0], 2 / 3, places=3)
+        self.assertAlmostEqual(votes[8], 1 / 3, places=3)  # синий, 240°
+        # На сером и чёрном экране голосовать некому.
+        self.assertEqual(vote_shares(pixel_stats(solid((0.5, 0.5, 0.5)))), [0.0] * 12)
+
+    def test_scheme_highlights_only_the_points_that_gave_the_colour(self):
+        from aldk_light.screen import point_alpha
+
+        frame = solid((0.3, 0.3, 0.3), height=4, width=4)   # серый фон
+        frame[0, 0] = (1.0, 0.0, 0.0)                       # яркий красный — победитель
+        frame[0, 1] = (0.4, 0.3, 0.3)                       # едва красноватый: голос есть, но слабый
+        frame[0, 2] = (0.0, 0.0, 1.0)                       # яркий синий — проиграл
+        stats = pixel_stats(frame)
+        alpha = point_alpha(stats, 0).reshape(4, 4)
+        self.assertEqual(int(alpha[0, 0]), 255)
+        self.assertGreater(int(alpha[0, 1]), 70)
+        self.assertLess(int(alpha[0, 1]), 160)
+        self.assertEqual(int(alpha[0, 2]), 70)   # проигравший цвет приглушён так же, как серый фон
+        self.assertEqual(int(alpha[3, 3]), 70)
+        # «По очереди»: у каждой точки свой победитель — здесь у синей точки побеждает синий.
+        winners = np.zeros(16, int)
+        winners[2] = 8
+        self.assertEqual(int(point_alpha(stats, winners)[2]), 255)
+
+    def test_scheme_picture_is_rgba_points_row_by_row(self):
+        import base64
+
+        from aldk_light.screen import points_view
+
+        frame = solid((0.0, 0.0, 0.0), height=4, width=6)
+        frame[0, 0] = (1.0, 0.5, 0.0)
+        frame[2, 4] = (0.0, 1.0, 0.0)
+        view = points_view("0,0,6,4", frame, np.arange(24, dtype=np.uint8) + 100)
+        self.assertEqual((view["key"], view["width"], view["height"]), ("0,0,6,4", 3, 2))  # точки через одну
+        raw = base64.b64decode(view["pixels"])
+        self.assertEqual(len(raw), 3 * 2 * 4)
+        self.assertEqual(list(raw[:4]), [255, 128, 0, 100])          # левая верхняя точка
+        self.assertEqual(list(raw[(1 * 3 + 2) * 4:][:4]), [0, 255, 0, 116])  # строка 2, столбец 4 исходного кадра
 
     def test_dominant_is_not_a_mix(self):
         # Слева красное, справа синее, красного больше: лампы должны быть красными, а не фиолетовыми.
         frame = solid((0.0, 0.0, 1.0))
         frame[:, :24, :] = (1.0, 0.0, 0.0)
-        color, _ = dominant_color(zone_stats(frame, 4, 3))
+        color, _ = dominant_color(pixel_stats(frame))
         self.assertGreater(color[0], 0.8)
         self.assertLess(color[2], 0.2)
+
+    def test_colours_mixed_all_over_the_screen_do_not_blend(self):
+        # Синяя сцена с красными объектами по всему экрану. Пока голосовали участки, каждый участок
+        # содержал оба цвета и отдавал голос за их смесь — лампы светили фиолетовым.
+        rng = np.random.default_rng(1)
+        frame = solid((0.1, 0.2, 0.8), height=54, width=96)
+        frame[rng.random((54, 96)) < 0.4] = (0.9, 0.15, 0.1)
+        color, _ = dominant_color(pixel_stats(frame))
+        self.assertGreater(color[2], 0.7)
+        self.assertLess(color[0], 0.2)
+        # И в тонкую полоску тоже: чистый красный или чистый синий, но не пурпурный.
+        stripes = solid((0.1, 0.1, 0.9), height=54, width=96)
+        stripes[:, ::2] = (0.9, 0.1, 0.1)
+        color, _ = dominant_color(pixel_stats(stripes))
+        self.assertGreater(abs(float(color[0] - color[2])), 0.6)
+
+    def test_pixel_hue_sectors_match_the_colour_wheel(self):
+        import colorsys
+
+        from aldk_light.screen import _HUE_BINS
+
+        rng = np.random.default_rng(2)
+        points = rng.random((500, 3)).astype(np.float32)
+        expected = [int(colorsys.rgb_to_hsv(*map(float, p))[0] * _HUE_BINS) % _HUE_BINS for p in points]
+        self.assertEqual(pixel_stats(points.reshape(20, 25, 3)).bins.tolist(), expected)
+
+    def test_bigger_screen_area_outvotes_more_points(self):
+        from aldk_light.screen import _merge
+
+        # Два монитора одной площади, уменьшенные с разным шагом: у синего точек вчетверо больше,
+        # но настоящая площадь та же, а красный ярче — он и должен победить.
+        red = pixel_stats(solid((1.0, 0.0, 0.0), height=10, width=10), area=16)
+        blue = pixel_stats(solid((0.0, 0.0, 0.8), height=20, width=20), area=4)
+        color, _ = dominant_color(_merge([red, blue]))
+        self.assertGreater(color[0], color[2])
+        self.assertAlmostEqual(scene_light(_merge([red, blue])), 0.9, places=5)
 
     def test_grey_screen_with_small_icon_stays_grey(self):
         frame = solid((0.9, 0.9, 0.9))
         frame[:2, :2, :] = (1.0, 0.0, 0.0)
-        color, _ = dominant_color(zone_stats(frame, 4, 3))
+        color, _ = dominant_color(pixel_stats(frame))
         self.assertLess(float(color.max() - color.min()), 0.15)
 
     def test_current_hue_is_kept_when_rival_is_only_slightly_stronger(self):
-        def stats(red_weight, blue_weight):
-            return ZoneStats(
-                mean=np.array([[1, 0, 0], [0, 0, 1]], np.float32),
-                vivid=np.array([[1, 0, 0], [0, 0, 1]], np.float32),
-                weight=np.array([red_weight, blue_weight], np.float32),
-                light=np.array([1, 1], np.float32),
-            )
+        def stats(red_columns, blue_columns):
+            frame = solid((0.0, 0.0, 0.0), height=10, width=40)
+            frame[:, :red_columns] = (1.0, 0.0, 0.0)
+            frame[:, red_columns:red_columns + blue_columns] = (0.0, 0.0, 1.0)
+            return pixel_stats(frame)
 
-        _, red_bin = dominant_color(stats(1.0, 0.5))
-        _, kept = dominant_color(stats(1.0, 1.1), prefer_bin=red_bin)
+        _, red_bin = dominant_color(stats(10, 5))
+        _, kept = dominant_color(stats(10, 11), prefer_bin=red_bin)
         self.assertEqual(kept, red_bin)
-        _, switched = dominant_color(stats(1.0, 2.0), prefer_bin=red_bin)
+        _, switched = dominant_color(stats(10, 20), prefer_bin=red_bin)
         self.assertNotEqual(switched, red_bin)
 
     def test_screen_green_is_not_sent_as_turquoise(self):
@@ -194,7 +265,7 @@ class ZoneTest(unittest.TestCase):
 
     def test_dark_tinted_scene_keeps_its_tint(self):
         # Тёмно-синяя ночная сцена: раньше серая масса перевешивала и лампы белели.
-        color, _ = dominant_color(zone_stats(solid((0.02, 0.03, 0.10)), 4, 3))
+        color, _ = dominant_color(pixel_stats(solid((0.02, 0.03, 0.10))))
         self.assertGreater(color[2], color[0] * 3)
 
     def test_dark_grey_screen_with_a_few_coloured_pixels_stays_neutral(self):
@@ -206,7 +277,7 @@ class ZoneTest(unittest.TestCase):
         rng = np.random.default_rng(1)
         ys, xs = rng.integers(0, 60, 60), rng.integers(0, 100, 60)
         frame[ys, xs, :] = (0.9, 0.8, 0.2)
-        stats = zone_stats(frame, 4, 3)
+        stats = pixel_stats(frame)
         color, _ = dominant_color(stats)
         _, sat = lamp_hue_sat(color, saturation=200)
         self.assertGreater(sat, 0.9)                              # без проверки доверия — тот самый жёлтый
@@ -218,7 +289,7 @@ class ZoneTest(unittest.TestCase):
         # Четверть экрана занята насыщенным цветом — это уже цвет сцены, а не шум.
         frame = solid((0.12, 0.12, 0.12), height=60, width=100)
         frame[:, :25, :] = (0.1, 0.7, 0.2)
-        stats = zone_stats(frame, 4, 3)
+        stats = pixel_stats(frame)
         color, _ = dominant_color(stats)
         hue, sat = lamp_hue_sat(color)
         self.assertEqual(colour_confidence(stats), 1.0)
@@ -227,11 +298,11 @@ class ZoneTest(unittest.TestCase):
 
     def test_dark_but_evenly_tinted_scene_is_trusted(self):
         # Ночное небо: света мало, но вся картинка синяя — это цвет сцены.
-        self.assertEqual(colour_confidence(zone_stats(solid((0.02, 0.03, 0.10)), 4, 3)), 1.0)
+        self.assertEqual(colour_confidence(pixel_stats(solid((0.02, 0.03, 0.10)))), 1.0)
 
     def test_plain_grey_and_black_screens_have_no_colour(self):
-        self.assertEqual(colour_confidence(zone_stats(solid((0.5, 0.5, 0.5)), 4, 3)), 0.0)
-        self.assertEqual(colour_confidence(zone_stats(solid((0.0, 0.0, 0.0)), 4, 3)), 0.0)
+        self.assertEqual(colour_confidence(pixel_stats(solid((0.5, 0.5, 0.5)))), 0.0)
+        self.assertEqual(colour_confidence(pixel_stats(solid((0.0, 0.0, 0.0)))), 0.0)
 
     def test_monitor_choice_survives_renumbering(self):
         from aldk_light.screen import choose_monitors, monitor_key
@@ -273,7 +344,7 @@ class ZoneTest(unittest.TestCase):
         self.assertEqual(split_into_parts(np.array([0.0, 4000.0, 9999.0]), 0, 4000).tolist(), [0, 2, 2])
 
     def test_black_frame(self):
-        stats = zone_stats(solid((0.0, 0.0, 0.0)), 4, 3)
+        stats = pixel_stats(solid((0.0, 0.0, 0.0)))
         color, _ = dominant_color(stats)
         self.assertTrue(np.allclose(color, 0.0))
         self.assertEqual(float(stats.light.max()), 0.0)
