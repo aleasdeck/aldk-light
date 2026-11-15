@@ -152,6 +152,31 @@
   .lampline .bar { flex: 1; height: 12px; border-radius: 6px; background: var(--accent); box-shadow: 0 0 26px rgba(var(--lamp), .8); transition: background .12s linear; }
   body.off .lampline .bar { background: #24242c; box-shadow: none; }
 
+  /* ---- калибровка цветов ---- */
+  .btn { padding: 8px 14px; border-radius: 10px; background: rgba(255,255,255,.08); color: var(--text); transition: background .15s; }
+  .btn:hover { background: rgba(255,255,255,.14); }
+  .btn:disabled { opacity: .35; pointer-events: none; }
+  .btn.primary { background: #ececf2; color: #0d0d12; font-weight: 600; }
+  .btn.primary:hover { background: #fff; }
+  .calib-entry #calibState { display: block; color: var(--text); }
+  .calib-entry .btns { display: flex; gap: 8px; margin-top: 14px; }
+  .calib-entry .btns .btn { flex: 1; }
+  /* Образец занимает всё окно. Панель управления нарочно серая и небольшая: рядом с образцом
+     не должно быть других цветов, иначе глаз сравнивает лампы не с ним. */
+  .calib { position: fixed; inset: 0; z-index: 10; display: flex; align-items: flex-end; justify-content: center; padding: 0 20px 34px; }
+  .calib[hidden] { display: none; }
+  .calib-panel { width: min(600px, 100%); padding: 18px 20px 16px; border-radius: 18px; background: #17171c; border: 1px solid rgba(255,255,255,.1); box-shadow: 0 12px 40px rgba(0,0,0,.45); }
+  .calib-head { display: flex; align-items: baseline; gap: 12px; }
+  .calib-head b { font-size: 16px; font-weight: 650; }
+  .calib-head span { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .calib-panel p { margin: 6px 0 16px; color: var(--muted); font-size: 13px; }
+  .calib-panel p.warn { color: var(--warn); }
+  .calib-panel input[type=range] { height: 8px; border-radius: 4px; background: rgba(255,255,255,.16); }
+  .calib-fine { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 14px 0 16px; }
+  .calib-fine output { width: 64px; text-align: center; font-size: 16px; font-variant-numeric: tabular-nums; }
+  .calib-actions { display: flex; gap: 8px; }
+  .calib-actions .grow { flex: 1; }
+
   /* ---- музыка ---- */
   .meter { display: flex; align-items: flex-end; gap: 5px; height: 150px; margin-bottom: 8px; }
   .meter i { flex: 1; border-radius: 4px; background: rgba(255,255,255,.07); height: 12%; transition: height .08s linear, background .08s linear; }
@@ -238,9 +263,7 @@
             <input type="range" data-key="min_brightness" min="0" max="40">
             <div class="field" style="grid-template-columns:1fr 44px"><span>Приглушать тёмные сцены</span><output data-out="dark_dimming"></output></div>
             <input type="range" data-key="dark_dimming" min="0" max="100">
-            <div class="field" style="grid-template-columns:1fr 44px"><span>Синий канал</span><output data-out="blue_trim"></output></div>
-            <input type="range" data-key="blue_trim" min="40" max="100">
-            <p class="hint" style="margin:18px 0 0">Чем сильнее приглушение, тем темнее лампы на тёмной картинке; на 100% они темнеют наравне с экраном. Светлые сцены не затрагиваются. Синий убавляйте, если зелёное на экране выглядит на лампах бирюзовым.</p>
+            <p class="hint" style="margin:18px 0 0">Чем сильнее приглушение, тем темнее лампы на тёмной картинке; на 100% они темнеют наравне с экраном. Светлые сцены не затрагиваются. Если цвета ламп не совпадают с экраном — пройдите калибровку цветов в настройках.</p>
           </div>
         </div>
       </section>
@@ -287,6 +310,12 @@
               </div>
             </div>
           </div>
+          <div class="card calib-entry">
+            <h2>Калибровка цветов</h2>
+            <p class="hint" style="margin:0 0 6px">Для режима «Экран». На мониторе по очереди показываются 12 цветов, к каждому подбирается оттенок ламп, который совпадает с ним на глаз.</p>
+            <span class="hint" id="calibState"></span>
+            <div class="btns"><button class="btn primary" id="calibOpen">Начать</button><button class="btn" id="calibReset">Сбросить</button></div>
+          </div>
           <div class="card">
             <h2>Устройство</h2>
             <dl><dt>Контроллер</dt><dd id="devName">—</dd><dt>Адрес</dt><dd id="devAddr">—</dd><dt>Связь</dt><dd id="devState">—</dd></dl>
@@ -296,6 +325,24 @@
       </section>
     </div>
   </main>
+</div>
+
+<div class="calib" id="calib" hidden>
+  <div class="calib-panel">
+    <div class="calib-head"><b id="calibTitle"></b><span id="calibStep"></span></div>
+    <p id="calibHint"></p>
+    <input type="range" id="calibHue" min="0" max="359" step="1">
+    <div class="calib-fine">
+      <button class="btn" data-turn="-5">−5°</button><button class="btn" data-turn="-1">−1°</button>
+      <output id="calibOut"></output>
+      <button class="btn" data-turn="1">+1°</button><button class="btn" data-turn="5">+5°</button>
+    </div>
+    <div class="calib-actions">
+      <button class="btn" id="calibCancel">Отмена</button><button class="btn" id="calibBack">Назад</button>
+      <span class="grow"></span>
+      <button class="btn" id="calibSkip">Пропустить</button><button class="btn primary" id="calibOk">Совпало</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -482,6 +529,73 @@ function initCycle() {
   mark();
 }
 
+/* ---- калибровка цветов ---- */
+// Окно заливается образцом, лампы показывают оттенок с ползунка. Пользователь крутит его, пока
+// свечение на стене не совпадёт с экраном; из ответов приложение строит поправку оттенков.
+const CALIB_HINT = "Подберите оттенок ламп, чтобы свечение на стене совпало с цветом экрана. Точного совпадения может не быть — берите ближайший. Стрелки ← → двигают на 1°, с Shift на 5°.";
+let calib = null;   // { patches, index, hues: что сейчас на ползунке, values: результат }
+function showCalibState() {
+  const done = (S.screen_calibration || []).filter(v => v >= 0).length;
+  $("#calibState").textContent = done ? `Выполнена: подобрано цветов — ${done} из ${S.screen_calibration.length}.`
+                                      : "Не выполнена: оттенки ламп берутся расчётные.";
+  $("#calibReset").disabled = !done;
+  $("#calibOpen").textContent = done ? "Пройти заново" : "Начать";
+}
+function calibTurn(hue) {
+  hue = ((Math.round(hue) % 360) + 360) % 360;
+  calib.hues[calib.index] = hue;
+  $("#calibHue").value = hue;
+  $("#calibOut").textContent = hue + "°";
+  send("calib", () => api.calibration_show(hue));
+}
+function calibShow() {
+  const patch = calib.patches[calib.index], last = calib.index === calib.patches.length - 1;
+  $("#calib").style.background = `rgb(${patch.rgb.join(",")})`;
+  $("#calibTitle").textContent = patch.name[0].toUpperCase() + patch.name.slice(1);
+  $("#calibStep").textContent = `${calib.index + 1} из ${calib.patches.length}`;
+  $("#calibBack").disabled = calib.index === 0;
+  $("#calibOk").textContent = last ? "Совпало, сохранить" : "Совпало";
+  calibTurn(calib.hues[calib.index]);
+}
+async function calibStart() {
+  const info = await api.calibration_start();
+  calib = { patches: info.patches, index: 0, hues: info.patches.map(p => p.hue), values: info.patches.map(p => p.saved), since: performance.now() };
+  $("#calib").hidden = false;
+  calibShow();
+}
+function calibClose() {
+  calib = null;
+  $("#calib").hidden = true;
+}
+async function calibStep(matched) {
+  // «Пропустить» оставляет образцу то, что было до калибровки.
+  if (matched) calib.values[calib.index] = calib.hues[calib.index];
+  if (calib.index + 1 < calib.patches.length) { calib.index++; calibShow(); return; }
+  const values = calib.values;
+  calibClose();
+  if (await api.calibration_finish(values)) { S.screen_calibration = values; showCalibState(); }
+}
+function initCalibration() {
+  showCalibState();
+  $("#calibOpen").onclick = calibStart;
+  $("#calibReset").onclick = async () => { await api.calibration_reset(); S.screen_calibration = []; showCalibState(); };
+  $("#calibHue").oninput = e => calibTurn(+e.target.value);
+  $$("#calib [data-turn]").forEach(b => b.onclick = () => calibTurn(calib.hues[calib.index] + +b.dataset.turn));
+  $("#calibOk").onclick = () => calibStep(true);
+  $("#calibSkip").onclick = () => calibStep(false);
+  $("#calibBack").onclick = () => { if (calib.index > 0) { calib.index--; calibShow(); } };
+  $("#calibCancel").onclick = () => { calibClose(); api.calibration_finish(null); };
+  window.addEventListener("keydown", e => {
+    if (!calib) return;
+    const turn = { ArrowLeft: -1, ArrowDown: -1, ArrowRight: 1, ArrowUp: 1 }[e.key];
+    if (turn) calibTurn(calib.hues[calib.index] + turn * (e.shiftKey ? 5 : 1));
+    else if (e.key === "Enter" && e.target.tagName !== "BUTTON") calibStep(true);   // на кнопке Enter нажимает её саму
+    else if (e.key === "Escape") $("#calibCancel").onclick();
+    else return;
+    e.preventDefault();
+  }, true);
+}
+
 /* ---- музыка ---- */
 const BARS = 32;
 function initMusic() {
@@ -631,6 +745,16 @@ function render(L) {
     const b = $("#brightness"); b.value = L.brightness; fill(b); $("#brightnessOut").textContent = L.brightness + "%";
   }
   if (L.lamp) setLamp(L.lamp);
+  if (calib) {
+    // Калибровку могли прервать снаружи (питание из трея) — тогда её экран закрывается без сохранения.
+    // Первую секунду ответ может быть ещё старым, запрошенным до начала калибровки.
+    if (L.calibrating === false) { if (performance.now() - calib.since > 1000) { calibClose(); api.calibration_finish(null); } }
+    else {
+      const offline = L.status !== "connected";
+      $("#calibHint").textContent = offline ? "Нет связи с лампами — они не покажут оттенок. Дождитесь подключения." : CALIB_HINT;
+      $("#calibHint").classList.toggle("warn", offline);
+    }
+  }
   if (page === "screen") { paintZones(L.zones || []); paintParts(L.parts || [], L.part); }
   if (page === "music") { paintMeter(S.mode === 3 && S.power ? L.level : 0); $("#musicError").textContent = L.music_error || ""; }
 }
@@ -646,7 +770,7 @@ async function poll() {
 async function boot() {
   DATA = await api.init();
   S = DATA.settings;
-  initControls(); initColor(); initEffects(); initMusic(); initCycle(); initSun();
+  initControls(); initColor(); initEffects(); initMusic(); initCycle(); initSun(); initCalibration();
   showPower();
   setLamp(hsv2rgb(S.hue, S.sat / 1000, 1));
   go(MODE_PAGES[S.mode] || "color");
@@ -658,22 +782,27 @@ async function boot() {
 function mockApi() {
   const s = { power: true, mode: 0, hue: 265, sat: 820, brightness: 80, effect: 55, effect_speed: 50, reverse: false, screen_displays: [],
     screen_cycle: true, cycle_period: 20,
-    smoothing: 60, saturation: 130, min_brightness: 5, dark_dimming: 40, blue_trim: 100, sensitivity: 100, music_rainbow: true, off_on_exit: false,
+    smoothing: 60, saturation: 130, min_brightness: 5, dark_dimming: 40, screen_calibration: [], sensitivity: 100, music_rainbow: true, off_on_exit: false,
     schedule_enabled: true, schedule_on: "09:00", schedule_off: "23:30", schedule_days: [0, 1, 2, 3, 4], device_name: "JTX-HC",
     schedule_sun: true, schedule_margin: 20, schedule_city: "Владивосток", schedule_lat: 43.12, schedule_lon: 131.89 };
   const monitors = [{ key: "0,0,2560,1440", left: 0, top: 0, width: 2560, height: 1440, primary: true, cols: 4, rows: 3 },
                     { key: "2560,-560,1440,2560", left: 2560, top: -560, width: 1440, height: 2560, primary: false, cols: 3, rows: 4 }];
   const names = ["Автоцикл", "Симфония", "Цветная энергия", "Раскрытие, красный", "Раскрытие, зелёный", "Раскрытие, синий", "Бегущая вода, 7 цветов", "Бегущая вода, красный-зелёный", "Шлейф, красный", "Шлейф, белый"];
-  let t = 0;
+  let t = 0, calibrating = false, calibHue = 0;
+  const patchNames = ["красный", "оранжевый", "жёлтый", "салатовый", "зелёный", "зелёно-бирюзовый", "голубой", "лазурный", "синий", "фиолетовый", "пурпурный", "розовый"];
   return {
+    calibration_start: async () => { calibrating = true; return { patches: patchNames.map((name, i) => ({ name, rgb: hsv2rgb(i * 30, 1, 1), hue: i * 30, saved: -1 })) }; },
+    calibration_show: async hue => { calibHue = hue; },
+    calibration_finish: async values => { calibrating = false; if (values) s.screen_calibration = values; return !!values; },
+    calibration_reset: async () => { s.screen_calibration = []; },
     init: async () => ({ settings: s, effects: names.map((n, i) => [i === 6 ? 55 : i + 1, n]), monitors, autostart: true,
       cities: [["Владивосток", 43.12, 131.89], ["Москва", 55.76, 37.62], ["Мурманск", 68.97, 33.08]] }),
     sun_info: async () => ({ sunrise: "08:04", sunset: "17:49", on_at: "17:29", off_at: "08:24", dark_now: false, sun_down_all_day: false }),
     poll: async () => {
       t += 0.07;
       const zone = (k, i) => hsv2rgb((200 + 60 * Math.sin(t + i * 0.6 + k)) % 360, 0.75, 0.35 + 0.3 * Math.sin(t * 1.3 + i));
-      const lamp = s.mode === 0 ? hsv2rgb(s.hue, s.sat / 1000, 1) : hsv2rgb((220 + 40 * Math.sin(t)) % 360, 0.8, 1);
-      return { status: "connected", detail: "AA:BB:CC:DD:EE:FF", power: s.power, mode: s.mode, brightness: s.brightness, lamp,
+      const lamp = calibrating ? hsv2rgb(calibHue, 1, 1) : s.mode === 0 ? hsv2rgb(s.hue, s.sat / 1000, 1) : hsv2rgb((220 + 40 * Math.sin(t)) % 360, 0.8, 1);
+      return { status: "connected", detail: "AA:BB:CC:DD:EE:FF", power: s.power, mode: s.mode, calibrating, brightness: s.brightness, lamp,
         zones: s.mode === 2 ? monitors.map((m, k) => ({ key: m.key, colors: Array.from({ length: m.cols * m.rows }, (_, i) => zone(k, i)) })) : [],
         parts: s.mode === 2 ? [zone(0, 1), zone(0, 5), zone(1, 3)] : [], part: s.mode === 2 && s.screen_cycle ? Math.floor(t / 2) % 3 : null,
         level: Math.abs(Math.sin(t * 3)) ** 3, music_error: "" };

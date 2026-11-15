@@ -41,6 +41,17 @@ class Api:
 
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
+        self._window = None          # окно появляется позже, чем этот объект
+        self._fullscreen = False
+
+    def _set_fullscreen(self, wanted: bool) -> None:
+        if self._window is None or wanted == self._fullscreen:
+            return
+        try:
+            self._window.toggle_fullscreen()
+            self._fullscreen = wanted
+        except Exception:
+            log.exception("fullscreen switch failed")
 
     def init(self) -> dict:
         settings = self._engine.s
@@ -55,7 +66,7 @@ class Api:
                 key: getattr(settings, key)
                 for key in (
                     "power", "mode", "hue", "sat", "brightness", "effect", "effect_speed", "reverse",
-                    "screen_displays", "screen_cycle", "cycle_period", "smoothing", "saturation", "min_brightness", "dark_dimming", "blue_trim", "sensitivity",
+                    "screen_displays", "screen_cycle", "cycle_period", "smoothing", "saturation", "min_brightness", "dark_dimming", "screen_calibration", "sensitivity",
                     "music_rainbow", "off_on_exit", "schedule_enabled", "schedule_on", "schedule_off",
                     "schedule_days", "schedule_sun", "schedule_margin", "schedule_city", "schedule_lat",
                     "schedule_lon", "device_name",
@@ -99,6 +110,22 @@ class Api:
     def set(self, key: str, value):
         return self._engine.set(key, value)
 
+    def calibration_start(self) -> dict:
+        """Калибровка цветов: образец занимает весь экран, чтобы его было удобно сравнивать со стеной."""
+        info = self._engine.calibration_start()
+        self._set_fullscreen(True)
+        return info
+
+    def calibration_show(self, hue: int) -> None:
+        self._engine.calibration_show(hue)
+
+    def calibration_finish(self, values=None) -> bool:
+        self._set_fullscreen(False)
+        return self._engine.calibration_finish(values)
+
+    def calibration_reset(self) -> None:
+        self._engine.calibration_reset()
+
     def set_autostart(self, enabled: bool) -> bool:
         autostart.set_enabled(bool(enabled))
         return autostart.is_enabled()
@@ -120,16 +147,18 @@ def run(start_hidden: bool) -> int:
     quitting = threading.Event()
     hint_shown = threading.Event()
 
+    api = Api(engine)
     window = webview.create_window(
         APP_NAME,
         url=str(_web_dir() / "index.html"),
-        js_api=Api(engine),
+        js_api=api,
         width=1000,
         height=700,
         min_size=(860, 620),
         background_color="#0d0d12",
         hidden=start_hidden,
     )
+    api._window = window
 
     def show_window(*_args) -> None:
         try:

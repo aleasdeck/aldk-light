@@ -46,16 +46,71 @@ def _smoothstep(low: float, high: float, x: float) -> float:
     return t * t * (3 - 2 * t)
 
 
-def lamp_hue_sat(rgb, saturation: int = 100, blue: int = 100) -> tuple[float, float]:
+# Образцы для калибровки цветов: название и оттенок на экране (полная насыщенность и яркость).
+# Пользователь подбирает к каждому оттенок ламп, который на глаз совпадает с экраном.
+CALIBRATION_PATCHES: list[tuple[str, int]] = [
+    ("красный", 0), ("оранжевый", 30), ("жёлтый", 60), ("салатовый", 90),
+    ("зелёный", 120), ("зелёно-бирюзовый", 150), ("голубой", 180), ("лазурный", 210),
+    ("синий", 240), ("фиолетовый", 270), ("пурпурный", 300), ("розовый", 330),
+]
+NOT_CALIBRATED = -1  # образец пропущен: для него остаётся расчётный оттенок
+
+
+def patch_color(index: int) -> tuple[float, float, float]:
+    """Цвет образца на экране, RGB 0..1."""
+    return colorsys.hsv_to_rgb(CALIBRATION_PATCHES[index][1] / 360, 1.0, 1.0)
+
+
+def _linear_hue(rgb) -> tuple[float, float]:
+    """Расчётные оттенок (градусы) и насыщенность 0..1 цвета с экрана — до калибровки."""
+    r, g, b = (min(1.0, max(0.0, float(x))) ** _LED_GAMMA for x in rgb)
+    hue, sat, _ = colorsys.rgb_to_hsv(r, g, b)
+    return hue * 360, sat
+
+
+def patch_hue(index: int) -> float:
+    """Расчётный оттенок образца в градусах: от него отсчитывается поправка калибровки."""
+    return _linear_hue(patch_color(index))[0]
+
+
+def calibration_is_valid(calibration) -> bool:
+    return len(calibration) == len(CALIBRATION_PATCHES) and all(
+        type(x) is int and NOT_CALIBRATED <= x < 360 for x in calibration
+    )
+
+
+def calibrated_hue(hue: float, calibration) -> float:
+    """Расчётный оттенок (градусы) → оттенок ламп с учётом калибровки.
+
+    calibration — по одному числу на образец: какой оттенок ламп пользователь счёл совпадающим
+    с экраном (или NOT_CALIBRATED). Для каждого образца получается поправка «сколько градусов
+    добавить», между соседними образцами поправка меняется равномерно — оттенок идёт без скачков.
+    """
+    if not calibration_is_valid(calibration):
+        return hue % 360
+    anchors = []  # (расчётный оттенок образца, поправка −180..180)
+    for index, chosen in enumerate(calibration):
+        at = patch_hue(index)
+        offset = 0.0 if chosen == NOT_CALIBRATED else (chosen - at + 180) % 360 - 180
+        anchors.append((at, offset))
+    hue %= 360
+    for (left, left_offset), (right, right_offset) in zip(anchors, anchors[1:] + anchors[:1]):
+        width = (right - left) % 360
+        along = (hue - left) % 360
+        if along <= width:
+            return (hue + left_offset + (right_offset - left_offset) * along / width) % 360
+    return hue  # недостижимо: образцы покрывают весь круг
+
+
+def lamp_hue_sat(rgb, saturation: int = 100, calibration=()) -> tuple[float, float]:
     """Цвет с экрана (RGB 0..1) → оттенок 0..1 и насыщенность 0..1 для ленты.
 
-    saturation — усиление насыщенности в процентах, blue — доля синего канала в процентах
-    (у светодиодов синий заметнее, чем на мониторе; его можно убавить).
+    saturation — усиление насыщенности в процентах, calibration — калибровка цветов
+    (см. calibrated_hue). Она заменила ползунок «Синий канал»: тот убавлял синий одним
+    числом на все цвета и, исправляя зелёный, уводил небесно-синий в зелёную сторону.
     """
-    r, g, b = (min(1.0, max(0.0, float(x))) ** _LED_GAMMA for x in rgb)
-    b *= min(100, max(0, blue)) / 100
-    hue, sat, _ = colorsys.rgb_to_hsv(r, g, b)
-    return hue, min(1.0, sat * saturation / 100)
+    hue, sat = _linear_hue(rgb)
+    return calibrated_hue(hue, calibration) / 360 % 1.0, min(1.0, sat * saturation / 100)
 
 
 def scene_brightness(light: float, floor: int, dimming: int) -> float:

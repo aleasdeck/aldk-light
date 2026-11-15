@@ -111,8 +111,49 @@ class ZoneTest(unittest.TestCase):
         self.assertLess(hue * 360, 142)
         self.assertGreater(hue * 360, 120)
         self.assertGreater(sat, 0.9)
-        # Убавленный синий сдвигает ещё ближе к чистому зелёному.
-        self.assertLess(lamp_hue_sat(screen_green, blue=60)[0], hue)
+
+    # Что пользователь мог бы подобрать на калибровке: оттенок ламп для каждого из 12 образцов.
+    MATCHED = [355, 14, 52, 100, 118, 126, 170, 215, 236, 262, 305, 340]
+
+    def test_calibration_gives_exactly_the_matched_hue_on_every_sample(self):
+        from aldk_light.screen import CALIBRATION_PATCHES, calibrated_hue, lamp_hue_sat, patch_color, patch_hue
+
+        self.assertEqual(len(self.MATCHED), len(CALIBRATION_PATCHES))
+        for index, matched in enumerate(self.MATCHED):
+            self.assertAlmostEqual(calibrated_hue(patch_hue(index), self.MATCHED), matched, places=6)
+            self.assertAlmostEqual(lamp_hue_sat(patch_color(index), calibration=self.MATCHED)[0] * 360, matched, places=4)
+
+    def test_no_calibration_keeps_the_computed_hue(self):
+        from aldk_light.screen import calibrated_hue
+
+        for hue in (0, 11, 95.5, 180, 359.5):
+            self.assertAlmostEqual(calibrated_hue(hue, []), hue)
+            self.assertAlmostEqual(calibrated_hue(hue, [-1] * 12), hue)     # все образцы пропущены
+            self.assertAlmostEqual(calibrated_hue(hue, [10, 20, 30]), hue)  # испорченная запись в настройках
+            self.assertAlmostEqual(calibrated_hue(hue, [400] * 12), hue)
+
+    def test_calibration_changes_hue_without_jumps(self):
+        from aldk_light.screen import calibrated_hue
+
+        # Между образцами оттенок ламп должен идти плавно и в том же порядке, что на экране,
+        # в том числе через стык 359° → 0°: иначе лампы дёргались бы на переходных цветах.
+        hues = [calibrated_hue(tenth / 10, self.MATCHED) for tenth in range(3600)]
+        steps = [(after - before + 180) % 360 - 180 for before, after in zip(hues, hues[1:] + hues[:1])]
+        self.assertGreater(min(steps), 0.0)
+        self.assertLess(max(steps), 0.5)
+
+    def test_correcting_green_does_not_move_sky_blue(self):
+        from aldk_light.screen import lamp_hue_sat
+
+        # Ровно то, чего не умел ползунок «Синий канал»: зелёный с примесью синего сдвигаем
+        # к чистому зелёному, а небесно-синий при этом остаётся синим (раньше уходил в зелёный).
+        only_green = [-1] * 12
+        only_green[5] = 120
+        sky = (135 / 255, 206 / 255, 235 / 255)
+        green = (20 / 255, 130 / 255, 80 / 255)
+        self.assertAlmostEqual(lamp_hue_sat(sky, calibration=only_green)[0], lamp_hue_sat(sky)[0])
+        self.assertGreater(lamp_hue_sat(sky)[0] * 360, 195)
+        self.assertLess(lamp_hue_sat(green, calibration=only_green)[0] * 360, lamp_hue_sat(green)[0] * 360 - 5)
 
     def test_lamp_colour_keeps_pure_and_grey_colours(self):
         from aldk_light.screen import lamp_hue_sat
@@ -236,6 +277,72 @@ class ZoneTest(unittest.TestCase):
         color, _ = dominant_color(stats)
         self.assertTrue(np.allclose(color, 0.0))
         self.assertEqual(float(stats.light.max()), 0.0)
+
+
+class CalibrationFlowTest(unittest.TestCase):
+    """Калибровка в движке: лампы на время отдаются интерфейсу, потом возвращаются в свой режим."""
+
+    def make(self):
+        from aldk_light.engine import Engine
+        from aldk_light.settings import Settings
+
+        engine = Engine(Settings())
+        calls = []
+
+        class Link:  # вместо Bluetooth — запись всех команд
+            def __getattr__(self, name):
+                return lambda *args: calls.append((name, *args))
+
+        engine.link = Link()
+        return engine, calls
+
+    def test_samples_start_from_what_the_lamps_would_show_now(self):
+        from aldk_light.screen import CALIBRATION_PATCHES
+
+        engine, calls = self.make()
+        patches = engine.calibration_start()["patches"]
+        self.assertTrue(engine.live()["calibrating"])
+        self.assertIn(("set_power", True), calls)
+        self.assertEqual(len(patches), len(CALIBRATION_PATCHES))
+        self.assertEqual(patches[0]["rgb"], [255, 0, 0])
+        self.assertEqual([p["hue"] for p in patches[:5]], [0, 11, 60, 109, 120])  # расчётные оттенки
+        self.assertEqual({p["saved"] for p in patches}, {-1})
+
+    def test_matched_hues_are_shown_and_saved(self):
+        engine, calls = self.make()
+        engine.calibration_start()
+        engine.calibration_show(365)
+        self.assertEqual(calls[-1], ("set_color", 5, 1000))
+        values = [355, 14, 52, 100, 118, 126, 170, 215, 236, 262, 305, -1]
+        self.assertTrue(engine.calibration_finish(values))
+        self.assertEqual(engine.s.screen_calibration, values)
+        self.assertFalse(engine.live()["calibrating"])
+        # Следующая калибровка начинается с уже подобранного.
+        patches = engine.calibration_start()["patches"]
+        self.assertEqual([patches[0]["hue"], patches[0]["saved"]], [355, 355])
+        self.assertEqual(patches[11]["saved"], -1)
+
+    def test_cancel_and_bad_data_leave_calibration_untouched(self):
+        engine, _calls = self.make()
+        engine.calibration_start()
+        self.assertFalse(engine.calibration_finish(None))
+        self.assertEqual(engine.s.screen_calibration, [])
+        engine.calibration_start()
+        with self.assertRaises(ValueError):
+            engine.calibration_finish([1, 2, 3])
+        self.assertEqual(engine.s.screen_calibration, [])
+        self.assertFalse(engine.live()["calibrating"])  # лампы не зависают в режиме калибровки
+
+    def test_power_switch_ends_calibration_without_saving(self):
+        engine, calls = self.make()
+        engine.calibration_start()
+        engine.set_power(False)  # например, из трея
+        self.assertFalse(engine.live()["calibrating"])
+        calls.clear()
+        engine.calibration_show(100)
+        self.assertEqual(calls, [])  # оттенок с экрана калибровки больше не уходит на лампы
+        self.assertFalse(engine.calibration_finish([0] * 12))
+        self.assertEqual(engine.s.screen_calibration, [])
 
 
 class FadeTest(unittest.TestCase):

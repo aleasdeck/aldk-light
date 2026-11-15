@@ -20,6 +20,7 @@ from . import protocol, sun
 from .ble import LampLink
 from .fade import ColorFader
 from .schedule import desired_power, parse_hhmm
+from . import screen
 from .screen import ScreenFrame, ScreenSampler, lamp_hue_sat, scene_brightness
 from .settings import MODE_COLOR, MODE_EFFECT, MODE_MUSIC, MODE_SCREEN, Settings
 
@@ -64,7 +65,6 @@ _SETTERS: dict[str, Callable[[Any], Any]] = {
     "saturation": _int_in(50, 250),
     "min_brightness": _int_in(0, 40),
     "dark_dimming": _int_in(0, 100),
-    "blue_trim": _int_in(40, 100),
     "sensitivity": _int_in(30, 300),
     "effect_speed": _int_in(1, 100),
     "cycle_period": _int_in(5, 50),
@@ -104,6 +104,7 @@ class Engine:
         self._music_time = time.monotonic()
         self._dirty = False
         self._schedule_state: bool | None = None
+        self._calibrating = False             # идёт калибровка цветов: лампы показывают оттенок из интерфейса
         self._stop = threading.Event()
         self._keeper: threading.Thread | None = None
         self.link = LampLink(settings.device_name, self._on_status, settings.last_address)
@@ -195,6 +196,61 @@ class Engine:
                 self._check_schedule()
         return value
 
+    # ---- калибровка цветов -------------------------------------------------
+
+    def calibration_start(self) -> dict:
+        """Остановить подсветку и отдать лампы интерфейсу: он показывает образец на экране,
+        а пользователь подбирает к нему оттенок ламп. Возвращает образцы."""
+        with self._lock:
+            self._stop_sources()
+            self._calibrating = True
+            self.link.set_power(True)
+            self.link.set_brightness(self.s.brightness * 10)
+            saved = self.s.screen_calibration
+            if not screen.calibration_is_valid(saved):
+                saved = [screen.NOT_CALIBRATED] * len(screen.CALIBRATION_PATCHES)
+            patches = []
+            for index, (name, _screen_hue) in enumerate(screen.CALIBRATION_PATCHES):
+                patches.append(
+                    {
+                        "name": name,
+                        "rgb": [round(x * 255) for x in screen.patch_color(index)],
+                        # С чего начать подбор: то, что лампы показали бы на этом образце сейчас.
+                        "hue": round(screen.calibrated_hue(screen.patch_hue(index), saved)) % 360,
+                        "saved": saved[index],
+                    }
+                )
+            return {"patches": patches}
+
+    def calibration_show(self, hue: int) -> None:
+        with self._lock:
+            if not self._calibrating:
+                return
+            hue = int(hue) % 360
+            self.link.set_color(hue, 1000)
+            self._set_lamp_preview(hue / 360, 1.0, 1.0)
+
+    def calibration_finish(self, values: Any = None) -> bool:
+        """Закончить калибровку и вернуть лампы в обычный режим. values — результат; None — отмена.
+        Возвращает, сохранён ли результат."""
+        with self._lock:
+            try:
+                if values is None or not self._calibrating:
+                    return False
+                values = [int(x) for x in values]
+                if not screen.calibration_is_valid(values):
+                    raise ValueError("калибровка не того вида")
+                self.s.screen_calibration = values
+                self._dirty = True
+                return True
+            finally:
+                self._apply()  # лампы возвращаются в обычный режим при любом исходе
+
+    def calibration_reset(self) -> None:
+        with self._lock:
+            self.s.screen_calibration = []
+            self._dirty = True
+
     def sun_info(self) -> dict:
         """Сегодняшние рассвет и закат для интерфейса, по местному времени."""
         now = datetime.now().astimezone()
@@ -225,6 +281,7 @@ class Engine:
                 "detail": detail,
                 "power": self.s.power,
                 "mode": self.s.mode,
+                "calibrating": self._calibrating,
                 "brightness": self.s.brightness,
                 "lamp": list(self._lamp) if self._lamp else None,
                 "zones": self._zones,
@@ -278,6 +335,9 @@ class Engine:
 
     def _apply(self) -> None:
         """Привести лампы и источники цвета в соответствие с настройками. Вызывать под _lock."""
+        # Любое переключение (питание из трея, смена режима) заканчивает и калибровку:
+        # интерфейс увидит это в live() и закроет её экран.
+        self._calibrating = False
         self._stop_sources()
         with self._live_lock:
             self._music_error = ""
@@ -326,7 +386,7 @@ class Engine:
         # Насыщенность и яркость считаем до сглаживания, чтобы плавно менялось уже то,
         # что реально увидят лампы: иначе усиление насыщенности превращает ровный
         # переход в рывок посередине.
-        hue, sat = lamp_hue_sat(color, self.s.saturation, self.s.blue_trim)
+        hue, sat = lamp_hue_sat(color, self.s.saturation, self.s.screen_calibration)
         sat *= confidence  # цвета на экране почти нет — лампы остаются нейтральными, а не ловят случайный оттенок
         value = scene_brightness(light, self.s.min_brightness, self.s.dark_dimming)
         fader = self._fader
@@ -369,6 +429,8 @@ class Engine:
         if not self.s.schedule_enabled:
             self._schedule_state = None
             return
+        if self._calibrating:
+            return  # не прерываем калибровку закатом; расписание сработает, когда она закончится
         if self.s.schedule_sun:
             wanted = sun.lamps_wanted(
                 datetime.now().astimezone(), self.s.schedule_lat, self.s.schedule_lon, self.s.schedule_margin

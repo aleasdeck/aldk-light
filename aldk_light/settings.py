@@ -54,7 +54,9 @@ class Settings:
     saturation: int = 130    # %, усиление насыщенности в режиме экрана
     min_brightness: int = 5  # 0..40, нижняя граница яркости на тёмных сценах (мощность = квадрат: 10 → 1%)
     dark_dimming: int = 60   # 0..100, насколько сильно глушить лампы на тёмных сценах
-    blue_trim: int = 100     # %, доля синего канала: у светодиодов синий заметнее, чем на мониторе
+    # Калибровка цветов: какой оттенок ламп совпал на глаз с каждым образцом на экране
+    # (по одному числу на образец из screen.CALIBRATION_PATCHES, -1 — пропущен); пусто — не калибровали.
+    screen_calibration: list[int] = field(default_factory=list)
     sensitivity: int = 100   # %, чувствительность цветомузыки
     music_rainbow: bool = True
     off_on_exit: bool = False
