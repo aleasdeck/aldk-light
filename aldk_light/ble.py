@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 from typing import Callable
 
 from bleak import BleakClient, BleakScanner
@@ -22,14 +23,17 @@ log = logging.getLogger(__name__)
 # Порядок отправки каналов в одном цикле.
 _ORDER = ("power", "bri", "hs", "effect", "dir", "speed")
 
-# Пауза между пакетами: 60 пакетов/с — столько контроллер принимал на замере.
-# Подсветка шлёт цвет и яркость 30 раз в секунду, это как раз 60 пакетов.
-_PACKET_INTERVAL = 1 / 60
+# Наименьшая пауза между пакетами — один интервал соединения (15 мс), то есть не больше одного
+# пакета за обмен. Подсветка шлёт яркость и цвет 30 раз в секунду: это 60 пакетов/с, столько
+# контроллер принимал на замере. Пауза взята чуть короче половины шага подсветки (16.7 мс),
+# иначе отправка шага занимала бы шаг целиком и понемногу отставала.
+_PACKET_INTERVAL = 1 / 66
 # Пакеты идут без подтверждения. Замер на лампах: подтверждённая запись занимает ~41 мс
-# (три интервала соединения по 13.75 мс), и если подтверждать каждый пакет, до ламп доходит
+# (три интервала соединения), и если подтверждать каждый пакет, до ламп доходит
 # около 20 обновлений в секунду вместо 50, причём неровно — переход цвета идёт ступеньками.
 # Редкое подтверждение оставлено как страховка: оно не даёт стеку Bluetooth копить хвост.
-_ACK_EVERY = 150
+# Редкое — потому что каждое съедает один шаг плавного перехода (раз в полминуты это не видно).
+_ACK_EVERY = 2000
 # Интервал соединения — как часто компьютер и контроллер вообще обмениваются пакетами.
 # Сразу после подключения он короткий (13.75 мс), но позже Windows сама переводит связь
 # в «сбалансированный» режим с интервалом 50 мс. Тогда до ламп доходит не больше 20 обновлений
@@ -40,6 +44,18 @@ _FAST_INTERVAL_MS = 20.0     # интервал длиннее — значит,
 _LINK_CHECK_SECONDS = 10.0   # как часто сверять интервал
 
 StatusCallback = Callable[[str, str], None]
+
+
+async def _sleep_exactly(seconds: float) -> None:
+    """Точная пауза внутри цикла asyncio.
+
+    asyncio.sleep в Windows шагает по 15.6 мс: вместо 16 мс выходило то 16, то 31. Замер:
+    из 30 шагов перехода в секунду до ламп уходило 24–25, каждый пятый терялся (пауза 62 мс
+    вместо 33), а яркость и цвет одного шага расходились на 21–31 мс. На быстрой смене цвета
+    это видно как ступеньки. time.sleep в отдельном потоке выдерживает паузу до долей миллисекунды.
+    """
+    if seconds > 0:
+        await asyncio.get_running_loop().run_in_executor(None, time.sleep, seconds)
 
 
 def address_number(address: str) -> int:
@@ -237,6 +253,7 @@ class LampLink:
 
     async def _pump(self, client: BleakClient, lost: asyncio.Event) -> None:
         assert self._wake is not None
+        next_at = 0.0  # раньше этого момента следующий пакет не отправляем
         while True:
             await self._wake.wait()
             self._wake.clear()
@@ -248,11 +265,13 @@ class LampLink:
                 packet = batch.get(key)
                 if packet is None:
                     continue
+                # Пауза — перед пакетом, а не после: новый шаг уходит сразу, как только появился.
+                await _sleep_exactly(next_at - time.perf_counter())
                 self.sent_packets += 1
                 acked = self.sent_packets % _ACK_EVERY == 0
                 await client.write_gatt_char(protocol.WRITE_UUID, packet, response=acked)
                 self._last_packet = packet
-                await asyncio.sleep(_PACKET_INTERVAL)
+                next_at = time.perf_counter() + _PACKET_INTERVAL
             if self._flush_wanted:
                 with self._lock:
                     idle = not self._pending
