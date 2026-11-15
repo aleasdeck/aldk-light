@@ -30,8 +30,21 @@ _PACKET_INTERVAL = 1 / 60
 # около 20 обновлений в секунду вместо 50, причём неровно — переход цвета идёт ступеньками.
 # Редкое подтверждение оставлено как страховка: оно не даёт стеку Bluetooth копить хвост.
 _ACK_EVERY = 150
+# Интервал соединения — как часто компьютер и контроллер вообще обмениваются пакетами.
+# Сразу после подключения он короткий (13.75 мс), но позже Windows сама переводит связь
+# в «сбалансированный» режим с интервалом 50 мс. Тогда до ламп доходит не больше 20 обновлений
+# в секунду, пачками, и плавный переход снова идёт ступеньками. Поэтому всё время, пока есть
+# связь, держим у Windows запрос на короткий интервал: с ним выходит 15 мс. Запрос действует,
+# только пока жив его объект, — отпустишь, и через секунду снова 50 мс (проверено на лампах).
+_FAST_INTERVAL_MS = 20.0     # интервал длиннее — значит, запрос слетел, просим заново
+_LINK_CHECK_SECONDS = 10.0   # как часто сверять интервал
 
 StatusCallback = Callable[[str, str], None]
+
+
+def address_number(address: str) -> int:
+    """Адрес вида «FF:23:09:08:20:97» → число, которым его принимает Windows."""
+    return int(address.replace(":", "").replace("-", ""), 16)
 
 
 class LampLink:
@@ -169,7 +182,12 @@ class LampLink:
                     self._connected = True
                     self._status("connected", device.address)
                     self._wake.set()
-                    await self._pump(client, lost)
+                    fast_link = asyncio.create_task(self._hold_fast_link(device.address))
+                    try:
+                        await self._pump(client, lost)
+                    finally:
+                        fast_link.cancel()
+                        await asyncio.gather(fast_link, return_exceptions=True)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -178,6 +196,44 @@ class LampLink:
                 await asyncio.sleep(2.0)
             finally:
                 self._connected = False
+
+    async def _hold_fast_link(self, address: str) -> None:
+        """Пока есть связь, удерживать короткий интервал соединения (см. _FAST_INTERVAL_MS).
+
+        Работает на Windows 11; где такого запроса нет, связь остаётся как есть.
+        """
+        device = request = None
+        try:
+            from winrt.windows.devices.bluetooth import BluetoothLEDevice
+            from winrt.windows.devices.bluetooth import BluetoothLEPreferredConnectionParameters as Preferred
+
+            device = await BluetoothLEDevice.from_bluetooth_address_async(address_number(address))
+            if device is None:
+                return
+            shown = None
+            while True:
+                interval = device.get_connection_parameters().connection_interval * 1.25
+                if request is None or interval > _FAST_INTERVAL_MS:
+                    if request is not None:
+                        request.close()
+                    request = device.request_preferred_connection_parameters(Preferred.throughput_optimized)
+                    await asyncio.sleep(1.5)  # новый интервал вступает в силу не мгновенно
+                    interval = device.get_connection_parameters().connection_interval * 1.25
+                if interval != shown:
+                    shown = interval
+                    log.info("link interval: %.2f ms", interval)
+                await asyncio.sleep(_LINK_CHECK_SECONDS)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # без быстрого интервала лампы работают, только переход грубее
+            log.warning("fast link unavailable: %s: %s", type(exc).__name__, exc)
+        finally:
+            for held in (request, device):
+                if held is not None:
+                    try:
+                        held.close()
+                    except Exception:
+                        pass
 
     async def _pump(self, client: BleakClient, lost: asyncio.Event) -> None:
         assert self._wake is not None

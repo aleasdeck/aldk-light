@@ -4,6 +4,7 @@ from datetime import datetime
 import numpy as np
 
 from aldk_light import protocol
+from aldk_light.ble import address_number
 from aldk_light.schedule import desired_power, parse_hhmm
 from aldk_light.screen import ZoneStats, colour_confidence, dominant_color, grid_for, zone_stats
 
@@ -42,6 +43,11 @@ class ProtocolTest(unittest.TestCase):
 
     def test_effect_ids_unique(self):
         self.assertEqual(len(protocol.EFFECT_IDS), len(protocol.EFFECTS))
+
+    def test_address_number(self):
+        # Таким числом Windows принимает адрес, когда у неё просят короткий интервал соединения.
+        self.assertEqual(address_number("FF:23:09:08:20:97"), 0xFF2309082097)
+        self.assertEqual(address_number("ff-23-09-08-20-97"), 0xFF2309082097)
 
 
 def solid(color, height=30, width=40):
