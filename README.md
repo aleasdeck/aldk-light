@@ -101,3 +101,7 @@ build.bat
 - `aldk_light/app.py` — окно, трей, защита от второго экземпляра
 - `aldk_light/web/index.html` — интерфейс
 - Настройки и журнал: `%APPDATA%\AldkLight\`
+
+## Лицензия
+
+[MIT](LICENSE)
