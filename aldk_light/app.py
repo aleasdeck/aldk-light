@@ -1,4 +1,7 @@
-"""Окно (WebView2 через pywebview), значок в трее и защита от второго экземпляра."""
+"""Окно (WebView2 через pywebview), значок в трее и защита от второго экземпляра.
+
+Окно существует, только пока оно открыто: в трее приложение работает без него.
+"""
 
 from __future__ import annotations
 
@@ -144,23 +147,24 @@ def run(start_hidden: bool) -> int:
     engine.start()
     autostart.refresh()
 
+    # Окно — это встроенный браузер (WebView2), он держит около 450 МБ памяти. Поэтому в трее окна
+    # нет вообще: оно создаётся, когда его просят показать, и уничтожается крестиком. Лампами
+    # управляет движок, ему окно не нужно. Замер: с окном ~670 МБ, без него ~100 МБ.
     quitting = threading.Event()
+    wake = threading.Event()            # попросили показать окно или выйти
     hint_shown = threading.Event()
+    lock = threading.Lock()
+    shown: list = []                    # окно, которое сейчас открыто (не больше одного)
 
-    api = Api(engine)
-    window = webview.create_window(
-        APP_NAME,
-        url=str(_web_dir() / "index.html"),
-        js_api=api,
-        width=1000,
-        height=700,
-        min_size=(860, 620),
-        background_color="#0d0d12",
-        hidden=start_hidden,
-    )
-    api._window = window
+    def current_window():
+        with lock:
+            return shown[0] if shown else None
 
     def show_window(*_args) -> None:
+        window = current_window()
+        if window is None:
+            wake.set()                  # главный поток создаст окно
+            return
         try:
             window.show()
             window.restore()
@@ -169,10 +173,13 @@ def run(start_hidden: bool) -> int:
 
     def quit_app(*_args) -> None:
         quitting.set()
-        try:
-            window.destroy()
-        except Exception:
-            log.exception("window destroy failed")
+        wake.set()
+        window = current_window()
+        if window is not None:
+            try:
+                window.destroy()
+            except Exception:
+                log.exception("window destroy failed")
 
     tray = pystray.Icon(
         "AldkLight",
@@ -188,19 +195,17 @@ def run(start_hidden: bool) -> int:
     tray.run_detached()
 
     def on_closing() -> bool:
-        if quitting.is_set():
-            return True
-        # Крестик сворачивает в трей. Прятать окно нужно не из обработчика закрытия.
-        threading.Thread(target=window.hide, daemon=True).start()
-        if not hint_shown.is_set():
+        # Крестик закрывает окно совсем, приложение остаётся в трее. С этого момента просьба
+        # «показать окно» должна создавать новое, а не трогать закрывающееся.
+        with lock:
+            shown.clear()
+        if not quitting.is_set() and not hint_shown.is_set():
             hint_shown.set()
             try:
                 tray.notify("Приложение работает в трее. Выход — через меню значка.", APP_NAME)
             except Exception:
                 log.exception("tray notify failed")
-        return False
-
-    window.events.closing += on_closing
+        return True
 
     def wait_for_second_instance() -> None:
         while _kernel32.WaitForSingleObject(show_event, _INFINITE) == 0:
@@ -210,8 +215,34 @@ def run(start_hidden: bool) -> int:
 
     threading.Thread(target=wait_for_second_instance, name="show-signal", daemon=True).start()
 
+    if not start_hidden:
+        wake.set()
     try:
-        webview.start()
+        while True:
+            wake.wait()
+            wake.clear()
+            if quitting.is_set():
+                break
+            api = Api(engine)
+            window = webview.create_window(
+                APP_NAME,
+                url=str(_web_dir() / "index.html"),
+                js_api=api,
+                width=1000,
+                height=700,
+                min_size=(860, 620),
+                background_color="#0d0d12",
+            )
+            api._window = window
+            window.events.closing += on_closing
+            with lock:
+                shown[:] = [window]
+            try:
+                webview.start()  # возвращается, когда окно закрыли
+            finally:
+                with lock:
+                    shown.clear()
+                engine.calibration_finish(None)  # окно закрыли посреди калибровки — лампы обратно в свой режим
     finally:
         quitting.set()
         engine.shutdown()

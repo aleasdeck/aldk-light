@@ -236,8 +236,10 @@ class Engine:
         """Закончить калибровку и вернуть лампы в обычный режим. values — результат; None — отмена.
         Возвращает, сохранён ли результат."""
         with self._lock:
+            if not self._calibrating:
+                return False  # калибровка не идёт (или её уже прервали) — лампы не трогаем
             try:
-                if values is None or not self._calibrating:
+                if values is None:
                     return False
                 values = [int(x) for x in values]
                 if not screen.calibration_is_valid(values):
