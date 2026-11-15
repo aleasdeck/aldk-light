@@ -1,0 +1,701 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aldk Light</title>
+<style>
+  :root {
+    --bg: #0d0d12;
+    --panel: #15151c;
+    --panel-2: #1c1c25;
+    --line: rgba(255, 255, 255, .07);
+    --line-2: rgba(255, 255, 255, .13);
+    --text: #ececf2;
+    --muted: #8d8d9c;
+    --lamp: 124, 108, 240;          /* цвет на лампах, r,g,b — обновляется на лету */
+    --accent: rgb(var(--lamp));
+    --ok: #4cc38a;
+    --warn: #e0a84a;
+    --bad: #e5484d;
+    --radius: 16px;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    overflow: hidden; user-select: none; -webkit-user-select: none; cursor: default;
+  }
+  /* мягкое свечение цветом ламп */
+  body::before {
+    content: ""; position: fixed; inset: -20% -10% auto auto; width: 70vw; height: 70vh; pointer-events: none;
+    background: radial-gradient(closest-side, rgba(var(--lamp), .22), transparent 70%);
+    transition: background .5s; filter: blur(10px);
+  }
+  body.off::before { background: none; }
+  button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; }
+  button:focus-visible, input:focus-visible { outline: 2px solid rgba(var(--lamp), .8); outline-offset: 2px; }
+
+  .app { position: relative; display: grid; grid-template-columns: 216px 1fr; height: 100%; }
+
+  /* ---- боковое меню ---- */
+  .nav { display: flex; flex-direction: column; gap: 4px; padding: 20px 12px 16px; border-right: 1px solid var(--line); background: rgba(255,255,255,.015); }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 2px 10px 18px; font-weight: 650; font-size: 15px; letter-spacing: .2px; }
+  .logo { width: 22px; height: 22px; border-radius: 50%;
+    background: conic-gradient(#ff4d4d, #ffd24d, #4dff88, #4dd2ff, #6a5cff, #ff4dd2, #ff4d4d);
+    -webkit-mask: radial-gradient(circle, transparent 38%, #000 40%); mask: radial-gradient(circle, transparent 38%, #000 40%); }
+  .nav-item { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 11px; color: var(--muted); text-align: left; transition: background .15s, color .15s; }
+  .nav-item svg { width: 18px; height: 18px; flex: none; }
+  .nav-item:hover { background: rgba(255,255,255,.05); color: var(--text); }
+  .nav-item.current { background: rgba(255,255,255,.08); color: var(--text); }
+  .nav-item .live { margin-left: auto; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 10px var(--accent); opacity: 0; transition: opacity .2s; }
+  .nav-item.active .live { opacity: 1; }
+  .nav-label { padding: 14px 12px 4px; font-size: 11px; letter-spacing: .8px; text-transform: uppercase; color: #5f5f6d; }
+  .nav-spacer { flex: 1; }
+  .status { display: flex; align-items: center; gap: 9px; padding: 10px 12px; border-radius: 11px; background: var(--panel); border: 1px solid var(--line); color: var(--muted); font-size: 12.5px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); flex: none; }
+  .dot.connected { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .dot.error { background: var(--bad); }
+  .dot.searching, .dot.connecting { animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+
+  /* ---- основная часть ---- */
+  main { display: flex; flex-direction: column; min-width: 0; height: 100%; }
+  .top { display: flex; align-items: center; gap: 20px; padding: 20px 28px 16px; }
+  .top h1 { margin: 0; font-size: 22px; font-weight: 650; letter-spacing: -.2px; }
+  .top p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+  .top .grow { flex: 1; min-width: 0; }
+  .bright { display: flex; align-items: center; gap: 10px; width: 240px; color: var(--muted); }
+  .bright svg { width: 18px; height: 18px; flex: none; }
+  .bright output { width: 38px; text-align: right; font-variant-numeric: tabular-nums; color: var(--text); }
+  .power { width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; background: var(--panel-2); border: 1px solid var(--line-2); color: var(--muted); transition: all .2s; }
+  .power svg { width: 20px; height: 20px; }
+  .power.on { background: var(--accent); color: #0d0d12; border-color: transparent; box-shadow: 0 0 26px rgba(var(--lamp), .55); }
+  .power:hover { transform: scale(1.05); }
+
+  .pages { flex: 1; min-height: 0; padding: 4px 28px 26px; overflow-y: auto; }
+  .page { display: none; height: 100%; }
+  .page.show { display: block; animation: fade .18s ease-out; }
+  @keyframes fade { from { opacity: 0; transform: translateY(4px); } }
+  .pages::-webkit-scrollbar { width: 10px; }
+  .pages::-webkit-scrollbar-thumb { background: rgba(255,255,255,.12); border-radius: 5px; border: 2px solid var(--bg); }
+
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; }
+  .card h2 { margin: 0 0 12px; font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: .2px; }
+  .cols { display: grid; gap: 16px; }
+  .hint { color: var(--muted); font-size: 12.5px; }
+  .error { color: var(--bad); font-size: 13px; }
+
+  /* ---- ползунки ---- */
+  input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 6px; border-radius: 3px; margin: 0; cursor: pointer;
+    background: linear-gradient(to right, var(--accent) var(--p, 50%), rgba(255,255,255,.12) var(--p, 50%)); }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 6px rgba(0,0,0,.5); transition: transform .12s; }
+  input[type=range]:hover::-webkit-slider-thumb { transform: scale(1.15); }
+  .field { display: grid; grid-template-columns: 150px 1fr 48px; align-items: center; gap: 14px; padding: 9px 0; }
+  .field output { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  /* ---- переключатели ---- */
+  .row { display: flex; align-items: center; gap: 14px; padding: 11px 0; }
+  .row + .row { border-top: 1px solid var(--line); }
+  .row .txt { flex: 1; min-width: 0; }
+  .row .txt b { display: block; font-weight: 550; }
+  .row .txt span { color: var(--muted); font-size: 12.5px; }
+  .switch { position: relative; width: 42px; height: 24px; border-radius: 12px; background: rgba(255,255,255,.14); transition: background .2s; flex: none; }
+  .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: transform .2s; }
+  .switch.on { background: var(--accent); }
+  .switch.on::after { transform: translateX(18px); }
+
+  .seg { display: inline-flex; padding: 3px; border-radius: 11px; background: rgba(255,255,255,.06); }
+  .seg button { padding: 7px 14px; border-radius: 8px; color: var(--muted); }
+  .seg button.on { background: rgba(255,255,255,.13); color: var(--text); }
+
+  /* ---- цвет ---- */
+  #page-color .cols { grid-template-columns: 1fr 250px; height: 100%; }
+  .pad { position: relative; height: 100%; min-height: 300px; border-radius: var(--radius); cursor: crosshair; overflow: hidden; touch-action: none;
+    background: linear-gradient(to bottom, transparent, #fff), linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+    box-shadow: inset 0 0 0 1px var(--line-2); }
+  .thumb { position: absolute; width: 22px; height: 22px; margin: -11px 0 0 -11px; border-radius: 50%; border: 3px solid #fff; box-shadow: 0 0 0 1.5px rgba(0,0,0,.55), 0 3px 10px rgba(0,0,0,.5); pointer-events: none; }
+  .now { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
+  .now .swatch { width: 54px; height: 54px; border-radius: 16px; background: var(--accent); box-shadow: 0 0 30px rgba(var(--lamp), .5); }
+  .now b { display: block; font-size: 16px; font-variant-numeric: tabular-nums; }
+  .presets { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+  .presets button { aspect-ratio: 1; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(255,255,255,.18); transition: transform .12s; }
+  .presets button:hover { transform: scale(1.12); }
+
+  /* ---- эффекты ---- */
+  .fx-bar { display: flex; align-items: center; gap: 22px; margin-bottom: 16px; }
+  .fx-bar .speed { display: flex; align-items: center; gap: 12px; flex: 1; color: var(--muted); }
+  .fx-bar .rev { display: flex; align-items: center; gap: 10px; color: var(--muted); }
+  .fx-group { margin-bottom: 18px; }
+  .fx-group h3 { margin: 0 0 9px; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .7px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { padding: 8px 14px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); color: #c9c9d4; transition: all .15s; }
+  .chip:hover { border-color: var(--line-2); color: var(--text); }
+  .chip.on { background: var(--accent); border-color: transparent; color: #0d0d12; font-weight: 600; box-shadow: 0 0 18px rgba(var(--lamp), .4); }
+
+  /* ---- экран ---- */
+  #page-screen .cols { grid-template-columns: 1fr 300px; }
+  .desk { position: relative; height: 300px; }
+  .mon { position: absolute; padding: 5px; border-radius: 10px; background: #050507; box-shadow: 0 0 0 1px var(--line-2), 0 10px 30px rgba(0,0,0,.5); cursor: pointer; transition: opacity .2s, transform .15s; }
+  .mon:hover { transform: translateY(-2px); }
+  .mon.skip { opacity: .28; }
+  .mon .grid { display: grid; gap: 2px; width: 100%; height: 100%; border-radius: 6px; overflow: hidden; }
+  .mon .grid i { background: #1b1b22; transition: background .12s linear; }
+  .mon .tag { position: absolute; left: 0; right: 0; bottom: -22px; text-align: center; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+  .partsline { display: flex; align-items: center; gap: 12px; margin-top: 34px; }
+  .partsline .hint, .lampline .hint { width: 70px; flex: none; }
+  .parts { flex: 1; display: flex; gap: 4px; height: 18px; }
+  .parts i { display: block; flex: 1; height: 100%; border-radius: 5px; background: #1b1b22; outline: 2px solid transparent; outline-offset: 2px; transition: background .12s linear, outline-color .15s; }
+  .parts i.now { outline-color: #fff; }
+  .lampline { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
+  .lampline .bar { flex: 1; height: 12px; border-radius: 6px; background: var(--accent); box-shadow: 0 0 26px rgba(var(--lamp), .8); transition: background .12s linear; }
+  body.off .lampline .bar { background: #24242c; box-shadow: none; }
+
+  /* ---- музыка ---- */
+  .meter { display: flex; align-items: flex-end; gap: 5px; height: 150px; margin-bottom: 8px; }
+  .meter i { flex: 1; border-radius: 4px; background: rgba(255,255,255,.07); height: 12%; transition: height .08s linear, background .08s linear; }
+
+  /* ---- настройки ---- */
+  #page-settings .cols { grid-template-columns: 1fr 1fr; align-items: start; }
+  .times { display: flex; gap: 12px; margin: 6px 0 14px; }
+  .times label { flex: 1; color: var(--muted); font-size: 12.5px; }
+  input[type=time], input[type=number], select { display: block; width: 100%; margin-top: 6px; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--panel-2); color: var(--text); font: inherit; color-scheme: dark; }
+  .days { display: flex; gap: 6px; }
+  .days button { flex: 1; padding: 8px 0; border-radius: 9px; background: rgba(255,255,255,.06); color: var(--muted); }
+  .days button.on { background: var(--accent); color: #0d0d12; font-weight: 600; }
+  .muted-block { opacity: .45; pointer-events: none; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; margin: 0; }
+  dt { color: var(--muted); } dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="nav">
+    <div class="brand"><div class="logo"></div>Aldk Light</div>
+    <div class="nav-label">Режимы</div>
+    <button class="nav-item" data-page="color"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.2"/></svg>Цвет<span class="live"></span></button>
+    <button class="nav-item" data-page="effect"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 16v4M17 18h4"/></svg>Эффекты<span class="live"></span></button>
+    <button class="nav-item" data-page="screen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="4.5" width="18" height="12" rx="2"/><path d="M8.5 20h7M12 16.5V20"/></svg>Экран<span class="live"></span></button>
+    <button class="nav-item" data-page="music"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 10v4M9 6v12M13 9v6M17 4v16M21 10v4"/></svg>Музыка<span class="live"></span></button>
+    <div class="nav-label">Приложение</div>
+    <button class="nav-item" data-page="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>Настройки</button>
+    <div class="nav-spacer"></div>
+    <div class="status"><span class="dot" id="statusDot"></span><span id="statusText">Запуск…</span></div>
+  </aside>
+
+  <main>
+    <header class="top">
+      <div class="grow"><h1 id="title"></h1><p id="subtitle"></p></div>
+      <label class="bright" title="Яркость">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2.5M12 19v2.5M2.5 12H5M19 12h2.5M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M5.3 18.7l1.8-1.8M16.9 7.1l1.8-1.8"/></svg>
+        <input type="range" id="brightness" min="1" max="100"><output id="brightnessOut"></output>
+      </label>
+      <button class="power" id="power" title="Включить или выключить лампы"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v8"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/></svg></button>
+    </header>
+
+    <div class="pages">
+      <section class="page" id="page-color">
+        <div class="cols">
+          <div class="pad" id="pad"><div class="thumb" id="thumb"></div></div>
+          <div class="card">
+            <div class="now"><div class="swatch"></div><div><b id="hex">#000000</b><span class="hint" id="hsText"></span></div></div>
+            <h2>Готовые цвета</h2>
+            <div class="presets" id="presets"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="page-effect">
+        <div class="fx-bar">
+          <div class="speed">Скорость <input type="range" id="effect_speed" min="1" max="100"></div>
+          <div class="rev">Обратное направление <button class="switch" data-key="reverse"></button></div>
+        </div>
+        <div id="effects"></div>
+      </section>
+
+      <section class="page" id="page-screen">
+        <div class="cols">
+          <div class="card">
+            <h2>Что видят лампы</h2>
+            <div class="desk" id="desk"></div>
+            <div class="partsline"><span class="hint">Три части</span><div class="parts" id="parts"><i></i><i></i><i></i></div></div>
+            <div class="lampline"><span class="hint">На лампах</span><div class="bar"></div></div>
+            <p class="hint" style="margin:16px 0 0">Каждый монитор делится на участки, лампы берут преобладающий оттенок. Контроллер красит ленту только целиком, поэтому цвета трёх частей можно показывать лишь по очереди. Щёлкните по монитору, чтобы исключить его.</p>
+          </div>
+          <div class="card">
+            <h2>Настройка</h2>
+            <div class="seg" id="cycleMode" style="display:flex; margin-bottom:6px"><button data-v="0" style="flex:1">Преобладающий</button><button data-v="1" style="flex:1">По очереди</button></div>
+            <div id="cycleBody">
+              <div class="field" style="grid-template-columns:1fr 60px"><span>Смена части каждые</span><output data-out="cycle_period"></output></div>
+              <input type="range" data-key="cycle_period" min="5" max="50">
+            </div>
+            <div class="field" style="grid-template-columns:1fr 60px"><span>Плавность перехода</span><output data-out="smoothing"></output></div>
+            <input type="range" data-key="smoothing" min="0" max="95">
+            <div class="field" style="grid-template-columns:1fr 44px"><span>Насыщенность</span><output data-out="saturation"></output></div>
+            <input type="range" data-key="saturation" min="50" max="250">
+            <div class="field" style="grid-template-columns:1fr 52px"><span>Минимальная яркость</span><output data-out="min_brightness"></output></div>
+            <input type="range" data-key="min_brightness" min="0" max="40">
+            <div class="field" style="grid-template-columns:1fr 44px"><span>Приглушать тёмные сцены</span><output data-out="dark_dimming"></output></div>
+            <input type="range" data-key="dark_dimming" min="0" max="100">
+            <div class="field" style="grid-template-columns:1fr 44px"><span>Синий канал</span><output data-out="blue_trim"></output></div>
+            <input type="range" data-key="blue_trim" min="40" max="100">
+            <p class="hint" style="margin:18px 0 0">Чем сильнее приглушение, тем темнее лампы на тёмной картинке; на 100% они темнеют наравне с экраном. Светлые сцены не затрагиваются. Синий убавляйте, если зелёное на экране выглядит на лампах бирюзовым.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="page-music">
+        <div class="card">
+          <div class="meter" id="meter"></div>
+          <p class="error" id="musicError"></p>
+          <div class="field"><span>Чувствительность</span><input type="range" data-key="sensitivity" min="30" max="300"><output data-out="sensitivity"></output></div>
+          <div class="row" style="border:0"><div class="txt"><b>Цвет</b><span>Радуга меняет оттенок на ударах, второй вариант держит цвет из вкладки «Цвет»</span></div>
+            <div class="seg" id="musicColor"><button data-v="1">Радуга</button><button data-v="0">Свой цвет</button></div></div>
+          <p class="hint" style="margin:10px 0 0">Яркость следует за басами того, что играет на компьютере. Микрофон не нужен.</p>
+        </div>
+      </section>
+
+      <section class="page" id="page-settings">
+        <div class="cols">
+          <div class="card">
+            <h2>Запуск и выход</h2>
+            <div class="row"><div class="txt"><b>Запускать вместе с Windows</b><span>Стартует свёрнутым в трей</span></div><button class="switch" id="autostart"></button></div>
+            <div class="row"><div class="txt"><b>Гасить лампы при выходе</b><span>При закрытии приложения через трей</span></div><button class="switch" data-key="off_on_exit"></button></div>
+          </div>
+          <div class="card">
+            <h2>Автоматическое включение</h2>
+            <div class="row" style="padding-top:0"><div class="txt"><b>Включать и выключать автоматически</b><span>Работает, пока приложение запущено</span></div><button class="switch" data-key="schedule_enabled"></button></div>
+            <div id="scheduleBody">
+              <div class="seg" id="scheduleMode" style="display:flex; margin:4px 0 14px"><button data-v="1" style="flex:1">По солнцу</button><button data-v="0" style="flex:1">По часам</button></div>
+              <div id="sunBody">
+                <div class="times"><label>Город<select id="city"></select></label></div>
+                <div class="times" id="coords">
+                  <label>Широта<input type="number" id="lat" step="0.01" min="-90" max="90"></label>
+                  <label>Долгота<input type="number" id="lon" step="0.01" min="-180" max="180"></label>
+                </div>
+                <div class="field" style="grid-template-columns:1fr 60px; padding-top:0"><span>Запас на сумерки</span><output data-out="schedule_margin"></output></div>
+                <input type="range" data-key="schedule_margin" min="0" max="90">
+                <p class="hint" id="sunInfo" style="margin:14px 0 0"></p>
+              </div>
+              <div id="clockBody">
+                <div class="times">
+                  <label>Включать в<input type="time" data-time="schedule_on"></label>
+                  <label>Выключать в<input type="time" data-time="schedule_off"></label>
+                </div>
+                <div class="days" id="days"></div>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <h2>Устройство</h2>
+            <dl><dt>Контроллер</dt><dd id="devName">—</dd><dt>Адрес</dt><dd id="devAddr">—</dd><dt>Связь</dt><dd id="devState">—</dd></dl>
+            <p class="hint" style="margin:14px 0 0">Контроллер держит одно подключение. Если лампы не находятся — закройте SymphonyLight на телефоне.</p>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<script>
+"use strict";
+const $ = (s, root = document) => root.querySelector(s);
+const $$ = (s, root = document) => [...root.querySelectorAll(s)];
+
+const PAGES = {
+  color:    { mode: 0, title: "Цвет",      hint: "Постоянный цвет на обеих лампах" },
+  effect:   { mode: 1, title: "Эффекты",   hint: "Встроенные анимации контроллера" },
+  screen:   { mode: 2, title: "Экран",     hint: "Лампы повторяют цвета картинки" },
+  music:    { mode: 3, title: "Музыка",    hint: "Лампы реагируют на звук компьютера" },
+  settings: { mode: null, title: "Настройки", hint: "Автозапуск, расписание, устройство" },
+};
+const MODE_PAGES = ["color", "effect", "screen", "music"];
+const PRESETS = [["Красный", 0, 1000], ["Оранжевый", 22, 1000], ["Жёлтый", 55, 1000], ["Зелёный", 120, 1000], ["Бирюзовый", 175, 1000],
+                 ["Синий", 240, 1000], ["Фиолетовый", 275, 1000], ["Розовый", 320, 850], ["Тёплый белый", 32, 450], ["Белый", 0, 0]];
+const STATUS = { searching: "Ищу лампы…", connecting: "Подключаюсь…", connected: "Подключено", error: "Нет связи, пробую снова" };
+const DAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+
+let api = null, S = null, DATA = null, page = "color", dragging = new Set();
+let touchedAt = 0;   // когда пользователь последний раз менял питание, режим или яркость
+const touch = () => { touchedAt = performance.now(); };
+
+/* ---- связь с приложением ---- */
+// Последнее значение побеждает: ползунок не забивает очередь вызовов.
+const slots = new Map();
+function send(key, fn) {
+  const slot = slots.get(key) || { timer: null, next: null };
+  slots.set(key, slot);
+  if (slot.timer) { slot.next = fn; return; }
+  fn();
+  slot.timer = setTimeout(() => { slot.timer = null; const next = slot.next; slot.next = null; if (next) send(key, next); }, 40);
+}
+const setKey = (key, value) => { S[key] = value; send(key, () => api.set(key, value)); };
+
+function hsv2rgb(h, s, v) {
+  const f = n => { const k = (n + h / 60) % 6; return Math.round(255 * (v - v * s * Math.max(0, Math.min(k, 4 - k, 1)))); };
+  return [f(5), f(3), f(1)];
+}
+const hex = rgb => "#" + rgb.map(x => x.toString(16).padStart(2, "0")).join("").toUpperCase();
+const fill = el => el.style.setProperty("--p", ((el.value - el.min) / (el.max - el.min) * 100) + "%");
+
+/* ---- страницы ---- */
+function go(name) {
+  page = name;
+  const info = PAGES[name];
+  $$(".page").forEach(p => p.classList.toggle("show", p.id === "page-" + name));
+  $$(".nav-item").forEach(b => b.classList.toggle("current", b.dataset.page === name));
+  $("#title").textContent = info.title;
+  $("#subtitle").textContent = info.hint;
+  if (info.mode !== null && info.mode !== S.mode) { touch(); S.mode = info.mode; api.set_mode(info.mode); markMode(); }
+  if (name === "color") placeThumb();
+  if (name === "screen") { layoutDesk(); refreshMonitors(); }
+  if (name === "settings") refreshSun();
+}
+function markMode() {
+  $$(".nav-item").forEach(b => b.classList.toggle("active", S.power && PAGES[b.dataset.page].mode === S.mode));
+}
+
+/* ---- цвет ---- */
+function placeThumb() {
+  const pad = $("#pad"), thumb = $("#thumb");
+  thumb.style.left = (S.hue / 360 * pad.clientWidth) + "px";
+  thumb.style.top = ((1 - S.sat / 1000) * pad.clientHeight) + "px";
+  const rgb = hsv2rgb(S.hue, S.sat / 1000, 1);
+  thumb.style.background = hex(rgb);
+  $("#hex").textContent = hex(rgb);
+  $("#hsText").textContent = `оттенок ${S.hue}°, насыщенность ${Math.round(S.sat / 10)}%`;
+}
+function pickColor(hue, sat) {
+  S.hue = hue; S.sat = sat;
+  placeThumb();
+  if (S.mode === 0) setLamp(hsv2rgb(hue, sat / 1000, 1));
+  send("color", () => api.set_color(hue, sat));
+}
+function initColor() {
+  const pad = $("#pad");
+  const at = e => {
+    const r = pad.getBoundingClientRect();
+    const x = Math.min(Math.max((e.clientX - r.left) / r.width, 0), 0.9999);
+    const y = Math.min(Math.max((e.clientY - r.top) / r.height, 0), 1);
+    pickColor(Math.floor(x * 360), Math.round((1 - y) * 1000));
+  };
+  pad.addEventListener("pointerdown", e => { pad.setPointerCapture(e.pointerId); at(e); });
+  pad.addEventListener("pointermove", e => { if (e.buttons & 1) at(e); });
+  for (const [name, hue, sat] of PRESETS) {
+    const b = document.createElement("button");
+    b.title = name;
+    b.style.background = hex(hsv2rgb(hue, sat / 1000, 1));
+    b.onclick = () => pickColor(hue, sat);
+    $("#presets").append(b);
+  }
+  new ResizeObserver(() => { if (page === "color") placeThumb(); }).observe(pad);
+}
+
+/* ---- эффекты ---- */
+function initEffects() {
+  const groups = new Map();
+  for (const [id, name] of DATA.effects) {
+    const parts = name.split(", ");
+    const group = parts.length > 1 ? parts[0] : "Основные";
+    if (!groups.has(group)) groups.set(group, []);
+    groups.get(group).push([id, parts.length > 1 ? parts.slice(1).join(", ") : name]);
+  }
+  for (const [group, items] of groups) {
+    const box = document.createElement("div");
+    box.className = "fx-group";
+    box.innerHTML = `<h3></h3><div class="chips"></div>`;
+    $("h3", box).textContent = group;
+    for (const [id, label] of items) {
+      const chip = document.createElement("button");
+      chip.className = "chip"; chip.textContent = label; chip.dataset.id = id;
+      chip.onclick = () => { S.effect = id; api.set_effect(id); markEffect(); };
+      $(".chips", box).append(chip);
+    }
+    $("#effects").append(box);
+  }
+  markEffect();
+}
+const markEffect = () => $$(".chip").forEach(c => c.classList.toggle("on", +c.dataset.id === S.effect));
+
+/* ---- экран ---- */
+// Монитор опознаётся по ключу «положение и размер», а не по номеру: номера Windows меняет после сна.
+function usedMonitors() {
+  const all = DATA.monitors.map(m => m.key);
+  const picked = S.screen_displays.filter(key => all.includes(key));
+  return picked.length ? picked : all;
+}
+async function refreshMonitors() {
+  const fresh = await api.monitors();
+  if (JSON.stringify(fresh) !== JSON.stringify(DATA.monitors)) { DATA.monitors = fresh; if (page === "screen") layoutDesk(); }
+}
+function layoutDesk() {
+  const desk = $("#desk");
+  desk.innerHTML = "";
+  if (!DATA.monitors.length) { desk.innerHTML = `<p class="hint">Мониторы не найдены.</p>`; return; }
+  const left = Math.min(...DATA.monitors.map(m => m.left)), top = Math.min(...DATA.monitors.map(m => m.top));
+  const right = Math.max(...DATA.monitors.map(m => m.left + m.width)), bottom = Math.max(...DATA.monitors.map(m => m.top + m.height));
+  const gap = 14, room = desk.clientHeight - 26;
+  const scale = Math.min((desk.clientWidth - gap * (DATA.monitors.length - 1)) / (right - left), room / (bottom - top));
+  const used = usedMonitors();
+  const order = [...DATA.monitors].sort((a, b) => a.left - b.left);
+  const offset = (desk.clientWidth - ((right - left) * scale + gap * (order.length - 1))) / 2;
+  order.forEach((m, i) => {
+    const el = document.createElement("div");
+    el.className = "mon" + (used.includes(m.key) ? "" : " skip");
+    el.dataset.mon = m.key;
+    el.style.cssText = `left:${offset + (m.left - left) * scale + i * gap}px; top:${(m.top - top) * scale}px; width:${m.width * scale}px; height:${m.height * scale}px`;
+    el.innerHTML = `<div class="grid" style="grid-template-columns:repeat(${m.cols},1fr); grid-template-rows:repeat(${m.rows},1fr)">${"<i></i>".repeat(m.cols * m.rows)}</div><div class="tag"></div>`;
+    $(".tag", el).textContent = `${m.width}×${m.height}${m.primary ? " · основной" : ""}`;
+    el.onclick = () => toggleMonitor(m.key);
+    desk.append(el);
+  });
+}
+function toggleMonitor(key) {
+  const all = DATA.monitors.map(m => m.key);
+  let used = usedMonitors();
+  used = used.includes(key) ? used.filter(x => x !== key) : [...used, key];
+  if (!used.length) return;                       // хотя бы один монитор должен остаться
+  S.screen_displays = used.length === all.length ? [] : used;
+  api.set("screen_displays", S.screen_displays);
+  layoutDesk();
+}
+function paintZones(zones) {
+  for (const z of zones) {
+    const cells = $$(`.mon[data-mon="${z.key}"] .grid i`);
+    z.colors.forEach((c, i) => { if (cells[i]) cells[i].style.background = `rgb(${c[0]},${c[1]},${c[2]})`; });
+  }
+}
+function paintParts(parts, active) {
+  $$("#parts i").forEach((el, i) => {
+    const c = parts[i];
+    el.style.background = c ? `rgb(${c[0]},${c[1]},${c[2]})` : "";
+    el.classList.toggle("now", active === i);
+  });
+}
+function initCycle() {
+  const mark = () => {
+    $$("#cycleMode button").forEach(b => b.classList.toggle("on", (b.dataset.v === "1") === S.screen_cycle));
+    $("#cycleBody").style.display = S.screen_cycle ? "" : "none";
+  };
+  $$("#cycleMode button").forEach(b => b.onclick = () => { setKey("screen_cycle", b.dataset.v === "1"); mark(); });
+  mark();
+}
+
+/* ---- музыка ---- */
+const BARS = 32;
+function initMusic() {
+  $("#meter").innerHTML = "<i></i>".repeat(BARS);
+  $$("#musicColor button").forEach(b => b.onclick = () => { setKey("music_rainbow", b.dataset.v === "1"); markMusic(); });
+  markMusic();
+}
+const markMusic = () => $$("#musicColor button").forEach(b => b.classList.toggle("on", (b.dataset.v === "1") === S.music_rainbow));
+let barLevels = new Array(BARS).fill(0);
+function paintMeter(level) {
+  // Бегущая история уровня: новый столбик справа.
+  barLevels.push(level); barLevels.shift();
+  $$("#meter i").forEach((bar, i) => {
+    const v = barLevels[i];
+    bar.style.height = (10 + v * 90) + "%";
+    bar.style.background = v > 0.03 ? `rgba(var(--lamp), ${0.35 + v * 0.65})` : "";
+  });
+}
+
+/* ---- общие элементы ---- */
+function setLamp(rgb) { if (rgb) document.documentElement.style.setProperty("--lamp", rgb.join(",")); }
+function initControls() {
+  const bright = $("#brightness");
+  const showBright = () => { fill(bright); $("#brightnessOut").textContent = bright.value + "%"; };
+  bright.value = S.brightness; showBright();
+  bright.oninput = () => { touch(); S.brightness = +bright.value; showBright(); send("brightness", () => api.set_brightness(S.brightness)); };
+  trackDrag(bright, "brightness");
+
+  $("#power").onclick = () => { touch(); S.power = !S.power; api.set_power(S.power); showPower(); };
+
+  for (const el of $$("input[type=range][data-key], #effect_speed")) {
+    const key = el.dataset.key || el.id;
+    const out = $(`[data-out="${key}"]`);
+    // Плавность показываем временем перехода — формула та же, что в fade.py.
+    const label = () => key === "smoothing" ? (0.03 + (el.value / 95) ** 2 * 2.97).toFixed(2) + " с"
+                      : key === "cycle_period" ? (el.value / 10).toFixed(1) + " с"
+                      : key === "schedule_margin" ? el.value + " мин"
+                      // Минимальная яркость: показываем реальную мощность ламп — формула та же, что в screen.py.
+                      : key === "min_brightness" ? ((el.value / 100) ** 2 * 100).toFixed(el.value < 10 ? 2 : 1) + "%"
+                      : el.value + "%";
+    const show = () => { fill(el); if (out) out.textContent = label(); };
+    el.value = S[key]; show();
+    el.oninput = () => { show(); setKey(key, +el.value); if (key === "schedule_margin") refreshSunSoon(); };
+  }
+  for (const sw of $$(".switch[data-key]")) {
+    const key = sw.dataset.key;
+    const show = () => { sw.classList.toggle("on", !!S[key]); if (key === "schedule_enabled") $("#scheduleBody").classList.toggle("muted-block", !S[key]); };
+    show();
+    sw.onclick = () => { setKey(key, !S[key]); show(); };
+  }
+  const auto = $("#autostart");
+  auto.classList.toggle("on", DATA.autostart);
+  auto.onclick = async () => { auto.classList.toggle("on", await api.set_autostart(!auto.classList.contains("on"))); };
+
+  for (const el of $$("input[data-time]")) {
+    el.value = S[el.dataset.time];
+    el.onchange = () => { if (el.value) setKey(el.dataset.time, el.value); };
+  }
+  DAYS.forEach((name, i) => {
+    const b = document.createElement("button");
+    b.textContent = name;
+    b.classList.toggle("on", S.schedule_days.includes(i));
+    b.onclick = () => {
+      const days = S.schedule_days.includes(i) ? S.schedule_days.filter(d => d !== i) : [...S.schedule_days, i].sort();
+      setKey("schedule_days", days);
+      b.classList.toggle("on", days.includes(i));
+    };
+    $("#days").append(b);
+  });
+  $("#devName").textContent = S.device_name;
+  $$(".nav-item").forEach(b => b.onclick = () => go(b.dataset.page));
+}
+/* ---- включение по закату и рассвету ---- */
+let sunTimer = null;
+const refreshSunSoon = () => { clearTimeout(sunTimer); sunTimer = setTimeout(refreshSun, 300); };
+async function refreshSun() {
+  const info = await api.sun_info();
+  const line = $("#sunInfo");
+  if (info.sunrise && info.sunset) {
+    line.textContent = `Сегодня рассвет в ${info.sunrise}, закат в ${info.sunset}. Лампы выключатся утром в ${info.off_at} и включатся вечером в ${info.on_at}.`;
+  } else if (info.sun_down_all_day) {
+    line.textContent = "Сегодня полярная ночь: солнце не восходит, лампы включены весь день.";
+  } else if (!info.sunrise && !info.sunset) {
+    line.textContent = "Сегодня полярный день: солнце не заходит, лампы не включаются.";
+  } else {
+    line.textContent = info.sunset ? `Сегодня закат в ${info.sunset}, рассвета нет.` : `Сегодня рассвет в ${info.sunrise}, заката нет.`;
+  }
+}
+function initSun() {
+  const markMode = () => {
+    $$("#scheduleMode button").forEach(b => b.classList.toggle("on", (b.dataset.v === "1") === S.schedule_sun));
+    $("#sunBody").style.display = S.schedule_sun ? "" : "none";
+    $("#clockBody").style.display = S.schedule_sun ? "none" : "";
+  };
+  $$("#scheduleMode button").forEach(b => b.onclick = () => { setKey("schedule_sun", b.dataset.v === "1"); markMode(); refreshSunSoon(); });
+  markMode();
+
+  const city = $("#city"), lat = $("#lat"), lon = $("#lon");
+  for (const [name] of DATA.cities) city.add(new Option(name, name));
+  city.add(new Option("Свои координаты…", ""));
+  const known = DATA.cities.some(c => c[0] === S.schedule_city);
+  city.value = known ? S.schedule_city : "";
+  const showCoords = () => {
+    $("#coords").style.display = city.value ? "none" : "";
+    lat.value = S.schedule_lat; lon.value = S.schedule_lon;
+  };
+  showCoords();
+  city.onchange = () => {
+    const found = DATA.cities.find(c => c[0] === city.value);
+    setKey("schedule_city", city.value);
+    if (found) { setKey("schedule_lat", found[1]); setKey("schedule_lon", found[2]); }
+    showCoords(); refreshSunSoon();
+  };
+  const coordChanged = (el, key, limit) => () => {
+    const v = parseFloat(el.value);
+    if (Number.isFinite(v) && Math.abs(v) <= limit) { setKey(key, v); refreshSunSoon(); }
+  };
+  lat.onchange = coordChanged(lat, "schedule_lat", 90);
+  lon.onchange = coordChanged(lon, "schedule_lon", 180);
+  refreshSun();
+}
+
+function trackDrag(el, key) {
+  el.addEventListener("pointerdown", () => dragging.add(key));
+  window.addEventListener("pointerup", () => dragging.delete(key));
+}
+function showPower() {
+  $("#power").classList.toggle("on", S.power);
+  document.body.classList.toggle("off", !S.power);
+  markMode();
+}
+
+/* ---- опрос состояния ---- */
+function render(L) {
+  $("#statusDot").className = "dot " + L.status;
+  $("#statusText").textContent = STATUS[L.status] || L.status;
+  $("#devState").textContent = STATUS[L.status] || L.status;
+  if (L.status === "connected" && L.detail) $("#devAddr").textContent = L.detail;
+
+  // Питание, режим и яркость могут поменяться снаружи: из трея или по расписанию.
+  // Сразу после своего действия ответ может быть ещё старым — не даём ему откатить интерфейс.
+  const settled = performance.now() - touchedAt > 800;
+  if (settled && L.power !== S.power) { S.power = L.power; showPower(); }
+  if (settled && L.mode !== S.mode) { S.mode = L.mode; markMode(); if (PAGES[page].mode !== null) go(MODE_PAGES[L.mode]); }
+  if (settled && L.brightness !== S.brightness && !dragging.has("brightness")) {
+    S.brightness = L.brightness;
+    const b = $("#brightness"); b.value = L.brightness; fill(b); $("#brightnessOut").textContent = L.brightness + "%";
+  }
+  if (L.lamp) setLamp(L.lamp);
+  if (page === "screen") { paintZones(L.zones || []); paintParts(L.parts || [], L.part); }
+  if (page === "music") { paintMeter(S.mode === 3 && S.power ? L.level : 0); $("#musicError").textContent = L.music_error || ""; }
+}
+async function poll() {
+  let delay = 400;
+  try {
+    render(await api.poll());
+    if (!document.hidden && (page === "screen" || page === "music")) delay = 70;
+  } catch (e) { delay = 1000; }
+  setTimeout(poll, delay);
+}
+
+async function boot() {
+  DATA = await api.init();
+  S = DATA.settings;
+  initControls(); initColor(); initEffects(); initMusic(); initCycle(); initSun();
+  showPower();
+  setLamp(hsv2rgb(S.hue, S.sat / 1000, 1));
+  go(MODE_PAGES[S.mode] || "color");
+  window.addEventListener("resize", () => { if (page === "screen") layoutDesk(); });
+  poll();
+}
+
+/* ---- запуск: внутри приложения или в браузере с заглушкой для вёрстки ---- */
+function mockApi() {
+  const s = { power: true, mode: 0, hue: 265, sat: 820, brightness: 80, effect: 55, effect_speed: 50, reverse: false, screen_displays: [],
+    screen_cycle: true, cycle_period: 20,
+    smoothing: 60, saturation: 130, min_brightness: 5, dark_dimming: 40, blue_trim: 100, sensitivity: 100, music_rainbow: true, off_on_exit: false,
+    schedule_enabled: true, schedule_on: "09:00", schedule_off: "23:30", schedule_days: [0, 1, 2, 3, 4], device_name: "JTX-HC",
+    schedule_sun: true, schedule_margin: 20, schedule_city: "Владивосток", schedule_lat: 43.12, schedule_lon: 131.89 };
+  const monitors = [{ key: "0,0,2560,1440", left: 0, top: 0, width: 2560, height: 1440, primary: true, cols: 4, rows: 3 },
+                    { key: "2560,-560,1440,2560", left: 2560, top: -560, width: 1440, height: 2560, primary: false, cols: 3, rows: 4 }];
+  const names = ["Автоцикл", "Симфония", "Цветная энергия", "Раскрытие, красный", "Раскрытие, зелёный", "Раскрытие, синий", "Бегущая вода, 7 цветов", "Бегущая вода, красный-зелёный", "Шлейф, красный", "Шлейф, белый"];
+  let t = 0;
+  return {
+    init: async () => ({ settings: s, effects: names.map((n, i) => [i === 6 ? 55 : i + 1, n]), monitors, autostart: true,
+      cities: [["Владивосток", 43.12, 131.89], ["Москва", 55.76, 37.62], ["Мурманск", 68.97, 33.08]] }),
+    sun_info: async () => ({ sunrise: "08:04", sunset: "17:49", on_at: "17:29", off_at: "08:24", dark_now: false, sun_down_all_day: false }),
+    poll: async () => {
+      t += 0.07;
+      const zone = (k, i) => hsv2rgb((200 + 60 * Math.sin(t + i * 0.6 + k)) % 360, 0.75, 0.35 + 0.3 * Math.sin(t * 1.3 + i));
+      const lamp = s.mode === 0 ? hsv2rgb(s.hue, s.sat / 1000, 1) : hsv2rgb((220 + 40 * Math.sin(t)) % 360, 0.8, 1);
+      return { status: "connected", detail: "AA:BB:CC:DD:EE:FF", power: s.power, mode: s.mode, brightness: s.brightness, lamp,
+        zones: s.mode === 2 ? monitors.map((m, k) => ({ key: m.key, colors: Array.from({ length: m.cols * m.rows }, (_, i) => zone(k, i)) })) : [],
+        parts: s.mode === 2 ? [zone(0, 1), zone(0, 5), zone(1, 3)] : [], part: s.mode === 2 && s.screen_cycle ? Math.floor(t / 2) % 3 : null,
+        level: Math.abs(Math.sin(t * 3)) ** 3, music_error: "" };
+    },
+    set_power: async on => { s.power = on; }, set_mode: async m => { s.mode = m; }, set_brightness: async v => { s.brightness = v; },
+    set_color: async (h, sat) => { s.hue = h; s.sat = sat; }, set_effect: async id => { s.effect = id; },
+    set: async (k, v) => { s[k] = v; return v; }, set_autostart: async on => on, monitors: async () => monitors,
+  };
+}
+let started = false;
+function start(real) {
+  if (started) return;
+  started = true;
+  api = real || mockApi();
+  boot();
+}
+if (location.search.includes("mock")) {
+  start(null);   // вёрстку можно смотреть в обычном браузере: index.html?mock
+} else {
+  window.addEventListener("pywebviewready", () => start(window.pywebview.api));
+  if (window.pywebview && window.pywebview.api) start(window.pywebview.api);
+}
+</script>
+</body>
+</html>
