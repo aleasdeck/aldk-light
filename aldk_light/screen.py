@@ -138,6 +138,26 @@ def scene_brightness(light: float, floor: int, dimming: int) -> float:
 _SWITCH_MARGIN = 1.2
 
 
+def _stop_cursor_flicker() -> None:
+    """Снимать экран без флага CAPTUREBLT.
+
+    С ним Windows на время каждого снимка прячет курсор мыши, а снимков 16 в секунду —
+    курсор заметно мерцал, пока включена подсветка. Флаг нужен только чтобы в снимок попадали
+    полупрозрачные «слоистые» окна (всплывающие подсказки, некоторые оверлеи); для цвета ламп
+    они ничего не решают. mss берёт значение из своей константы при каждом снимке.
+    """
+    for name in ("mss.windows.gdi", "mss.windows"):  # в разных версиях mss константа лежит в разных модулях
+        try:
+            module = __import__(name, fromlist=["CAPTUREBLT"])
+        except ImportError:
+            continue
+        if hasattr(module, "CAPTUREBLT"):
+            module.CAPTUREBLT = 0
+
+
+_stop_cursor_flicker()
+
+
 def _open_capture():
     return (getattr(mss, "MSS", None) or mss.mss)()  # в новых версиях mss класс называется MSS
 
